@@ -1,0 +1,78 @@
+# ============================================================
+#  mihomo 配置（模板）
+#
+#  ⚠️ 这个文件是「空模板」，不含任何真实节点。
+#  首次部署后，请到「代理设定」页粘贴你的机场订阅链接，
+#  系统会自动解析、填充节点、写回本文件并热重载。
+#
+#  手动方式：把订阅链接写进 data/subscription.txt，重启容器。
+#
+#  说明：本模板使用 mihomo 的 proxy-provider 机制，
+#  节点由订阅动态提供，因此不需要在此写死任何服务器地址。
+# ============================================================
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+ipv6: false
+unified-delay: true
+tcp-concurrent: true
+external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+  fallback:
+    - https://1.1.1.1/dns-query
+    - https://8.8.8.8/dns-query
+
+# ---------- 订阅（首次使用请填自己的机场链接）----------
+proxy-providers:
+  my-sub:
+    type: http
+    # 留空表示尚未配置；填写后 mihomo 会自动拉取节点
+    url: ""
+    interval: 3600
+    path: ./providers/my-sub.yaml
+    health-check:
+      enable: true
+      url: https://chatgpt.com/cdn-cgi/trace
+      interval: 300
+
+# ---------- 分组 ----------
+# ChatGPT -> 节点选择 -> 具体节点（纯手动，不做自动切换）
+proxy-groups:
+  - name: ChatGPT
+    type: select
+    proxies:
+      - 节点选择
+
+  - name: 节点选择
+    type: select
+    use:
+      - my-sub
+
+# ---------- 规则 ----------
+rules:
+  # 本地/内网直连
+  - DOMAIN-SUFFIX,local,DIRECT
+  - IP-CIDR,127.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,10.0.0.0/8,DIRECT,no-resolve
+  - IP-CIDR,172.16.0.0/12,DIRECT,no-resolve
+  - IP-CIDR,192.168.0.0/16,DIRECT,no-resolve
+  # 面板与网关自身直连（避免走代理绕一圈）
+  - DOMAIN-SUFFIX,localhost,DIRECT
+  # ChatGPT / OpenAI 走代理
+  - DOMAIN-SUFFIX,openai.com,ChatGPT
+  - DOMAIN-SUFFIX,chatgpt.com,ChatGPT
+  - DOMAIN-SUFFIX,oaistatic.com,ChatGPT
+  - DOMAIN-SUFFIX,oaiusercontent.com,ChatGPT
+  - DOMAIN-SUFFIX,auth0.com,ChatGPT
+  # 其余走代理（很多功能依赖，全直连容易失败）
+  - MATCH,ChatGPT

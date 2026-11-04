@@ -1,0 +1,62 @@
+# ========== 运行时数据（含账号、登录态，绝对不要提交）==========
+data/
+!data/.gitkeep
+
+# ========== 密钥与配置（用户自己的，不要提交）==========
+.env
+config.json
+# 注意：mihomo-config.yaml 需要保留在仓库里（Dockerfile 靠它构建）
+# 你本地改了订阅后不必提交这个文件
+# mihomo-config.yaml
+*.key
+*.pem
+subscription.txt
+
+# ========== Python ==========
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ========== 前端 / Node ==========
+node_modules/
+.next/
+out/
+.cache/
+*.log
+
+# ========== 开发临时文件 ==========
+_*.py
+_*.js
+_*.sh
+_*.json
+_*.txt
+_*.html
+dbg*.py
+*.bak
+*.tmp
+.# wheels/ 是离线依赖包，构建必需，保留
+# wheels/ 是离线依赖包，构建必需，保留
+
+# ========== 系统 ==========
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ========== IDE ==========
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ========== 其它 ==========
+*.tar
+*.tar.gz
+*.zip

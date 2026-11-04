@@ -1,0 +1,20 @@
+# 占位文件：首次部署后请到「代理设定」页粘贴你的订阅链接，
+# 系统会自动填充节点。详见 mihomo-config.template.yaml
+mixed-port: 7890
+allow-lan: false
+bind-address: 127.0.0.1
+mode: rule
+log-level: warning
+ipv6: false
+external-controller: 127.0.0.1:9090
+proxy-groups:
+  - name: ChatGPT
+    type: select
+    proxies:
+      - 节点选择
+  - name: 节点选择
+    type: select
+    proxies:
+      - DIRECT
+rules:
+  - MATCH,DIRECT

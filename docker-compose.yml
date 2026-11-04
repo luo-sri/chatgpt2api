@@ -1,0 +1,44 @@
+services:
+  # ============================================================
+  #  ChatGPT2API 一体化容器
+  #  一个容器 = mihomo 代理 + chatgpt2api + OpenAI 兼容网关 + Web 控制台
+  #
+  #  端口：
+  #    3000  API + 控制台（对话 / 代理设定 / 添加账号 / 号池 / 生图 ...）
+  #    8888  授权转发代理（浏览器代理指向它就能打开 OpenAI 授权页）
+  #
+  #  若 NAS 上 3000 已被占用，把 "3100:3000" 左边改掉即可，例如 "41000:3000"。
+  # ============================================================
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: chatgpt2api-allinone:latest
+    container_name: chatgpt2api-allinone
+    restart: unless-stopped
+    ports:
+      - "3100:3000"   # 唯一主端口：页面 + API + 生图 全部走这里
+      - "8888:8888"   # auth_proxy 认证代理
+      - "6080:6080"   # 内置浏览器（noVNC）
+    volumes:
+      - ./data:/app/data
+      # config.json 不挂载：密钥统一由下面的环境变量注入，
+      # 避免把含密钥的文件带进仓库
+      - ./mihomo-config.yaml:/root/.config/mihomo/config.yaml
+    environment:
+      - TZ=Asia/Shanghai
+      - STORAGE_BACKEND=json
+      - CHATGPT2API_AUTH_KEY=${CHATGPT2API_AUTH_KEY:?请在 .env 中设置}
+      - ALL_PROXY=http://127.0.0.1:7890
+      - NO_PROXY=localhost,127.0.0.1,::1,blob.core.windows.net,azureedge.net
+      - no_proxy=localhost,127.0.0.1,::1,blob.core.windows.net,azureedge.net
+      # 授权代理需绑定 0.0.0.0 才能被宿主访问
+      - AUTH_PROXY_BIND=0.0.0.0
+      - TIKTOKEN_CACHE_DIR=/app/data/tiktoken-cache
+      - DATA_GYM_CACHE_DIR=/app/data/tiktoken-cache
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request as u;u.build_opener(u.ProxyHandler({})).open('http://127.0.0.1:3000/health',timeout=3)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
