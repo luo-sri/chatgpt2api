@@ -105,26 +105,31 @@ ChatGPT 网页版很好用，但它没有标准 API，所以在 Cherry Studio、
 
 <table>
 <tr>
-<td width="50%"><b>首次使用引导</b><br><sub>自动弹出，5 步跑通</sub><br>
+<td width="50%"><b>登录页 · 默认密码提示</b><br><sub>首次打开就知道填什么</sub><br>
+<img src="docs/screenshots/06-login.webp" alt="登录页" width="100%"></td>
+<td width="50%"><b>首次使用引导</b><br><sub>登录后自动弹出，5 步跑通</sub><br>
 <img src="docs/screenshots/00-onboarding.webp" alt="新手引导" width="100%"></td>
-<td width="50%"><b>对话页</b><br><sub>流式输出、Markdown、会话管理</sub><br>
-<img src="docs/screenshots/01-chat.webp" alt="对话页" width="100%"></td>
 </tr>
 <tr>
+<td><b>对话页</b><br><sub>流式输出、Markdown、会话管理</sub><br>
+<img src="docs/screenshots/01-chat.webp" alt="对话页" width="100%"></td>
 <td><b>代理设定</b><br><sub>节点测速、手动切换、出口可见</sub><br>
 <img src="docs/screenshots/02-proxy.webp" alt="代理设定" width="100%"></td>
-<td><b>号池管理</b><br><sub>账号、额度、模型开关</sub><br>
-<img src="docs/screenshots/03-accounts.webp" alt="号池管理" width="100%"></td>
 </tr>
 <tr>
+<td><b>号池管理</b><br><sub>账号、生图额度、模型开关</sub><br>
+<img src="docs/screenshots/03-accounts.webp" alt="号池管理" width="100%"></td>
 <td><b>日志管理</b><br><sub>调用记录、一键清空</sub><br>
 <img src="docs/screenshots/04-logs.webp" alt="日志管理" width="100%"></td>
-<td><b>生图</b><br><sub>gpt-image-2 文生图/图生图</sub><br>
+</tr>
+<tr>
+<td><b>生图</b><br><sub>gpt-image-2 文生图 / 图生图</sub><br>
 <img src="docs/screenshots/05-image.webp" alt="生图" width="100%"></td>
+<td></td>
 </tr>
 </table>
 
-> 截图取自**空白环境**（无账号、无订阅），仅演示界面布局。
+> 截图取自**空白环境**（无账号、无订阅、无节点），仅演示界面布局。
 
 ---
 
@@ -156,7 +161,30 @@ docker compose up -d
 
 浏览器访问 **<http://127.0.0.1:3100>**
 
-用 `.env` 里的 `CHATGPT2API_AUTH_KEY` 登录。
+> **默认密码：`changeme`**
+>
+> 登录页上也会直接显示这个提示。首次使用直接输入即可。
+
+### ⚠️ 登录后第一件事：改密码
+
+出厂密码是公开的 `changeme`，**任何人都知道**。只要你的地址能被别人访问
+（局域网、公网、NAS），就必须改掉。
+
+改法（30 秒）：
+
+```bash
+# 1. 打开 .env，把 changeme 换成你自己的密码
+notepad .env          # Windows
+nano .env             # Linux / macOS
+
+# 改成：
+# CHATGPT2API_AUTH_KEY=你的新密码
+
+# 2. 重建容器让它生效
+docker compose up -d
+```
+
+改完用新密码重新登录。旧密码立即失效。
 
 ### 第一次使用（面板里有引导，也可以照这个走）
 
@@ -354,35 +382,53 @@ tar -czf backup-$(date +%F).tar.gz data/
 
 ## 🧩 项目结构
 
+根目录只保留必要的几个文件，代码按职责分目录：
+
 ```
 chatgpt2api/
-├── Dockerfile                  镜像定义
-├── docker-compose.yml          编排
-├── .env.example                配置示例
-├── VERSION                     版本号
-├── selfcheck.py                自检脚本（62 项）
+├── Dockerfile                    镜像定义
+├── docker-compose.yml            编排（端口 3100/8888/6080）
+├── deploy.sh                     一键部署
+├── config.ini                    网关配置
+├── README.md / LICENSE / VERSION
+├── .env.example                  配置示例
 │
-├── start.sh                    容器入口（启动 5 个服务）
-├── browser.sh                  内置浏览器（Xvfb + Chromium + noVNC）
-├── deploy.sh                   NAS 一键部署
-├── backup.sh                   数据备份
+├── app/                          ★ 应用代码
+│   ├── gateway.py                OpenAI 兼容网关 + 页面路由
+│   ├── webapi.py                 后端接口（代理/账号/OAuth/模型）
+│   ├── webui.py                  页面外壳（统一导航）
+│   ├── patch_webdist.py          前端补丁（启动时幂等执行）
+│   ├── cdpeval.py                CDP 客户端（控制内置浏览器）
+│   ├── stream_clean.py           流式输出净化
+│   ├── jsx_clean.py              非流式输出净化
+│   ├── auth_proxy.py             8888 授权转发代理
+│   ├── console.py                容器健康总览
+│   ├── entry.py                  入口
+│   └── pages/                    ★ 各页面模块
+│       ├── chat_page.py          对话页
+│       ├── proxy_page.py         代理设定页
+│       ├── oauth_page.py         添加账号引导页
+│       └── onboarding.py         首次使用新手引导
 │
-├── gateway.py                  OpenAI 兼容网关 + 页面路由
-├── webui.py                    页面外壳（统一导航）
-├── chat_page.py                对话页
-├── proxy_page.py               代理设定页
-├── oauth_page.py               添加账号引导页
-├── onboarding.py               首次使用新手引导
-├── webapi.py                   后端接口（代理/账号/OAuth/模型）
-├── cdpeval.py                  CDP 客户端（控制内置浏览器）
-├── patch_webdist.py            前端补丁（启动时幂等执行）
-├── stream_clean.py             流式输出净化
-├── jsx_clean.py                非流式输出净化
-├── auth_proxy.py               授权转发代理
-├── console.py                  容器健康总览
+├── scripts/                      ★ 运维脚本
+│   ├── start.sh                  容器入口（启动 5 个服务）
+│   ├── browser.sh                内置浏览器（Xvfb + Chromium + noVNC）
+│   ├── backup.sh                 数据备份
+│   ├── selfcheck.py              自检脚本（61 项）
+│   ├── cleanup_for_publish.py    发布前隐私清理
+│   ├── privacy_scan.py           隐私扫描
+│   └── build_release.py          构建发布目录
 │
-├── docs/                       文档与截图
-└── data/                       运行时数据（不入库）
+├── assets/                       ★ 资源
+│   ├── mihomo-config.yaml        代理配置（挂载进容器）
+│   ├── mihomo-config.template.yaml  配置模板
+│   ├── mihomo/                   GEO 数据库
+│   │   ├── Country.mmdb
+│   │   └── geosite.dat
+│   └── wheels/                   离线 pip 依赖
+│
+├── docs/                         文档与截图
+└── data/                         运行时数据（不入库）
 ```
 
 ---

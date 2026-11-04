@@ -190,12 +190,51 @@ ONBOARDING_JS = """<script>
   // 给「重新查看引导」留个入口
   window.__c2aOnboarding = function(){ start(true); };
 
+  /* 判断是否已登录：面板把登录态存在 IndexedDB 的 chatgpt2api/auth 库。
+     未登录时打开项目，应该只看登录页，不该弹引导。 */
+  function loggedIn(cb){
+    var path = location.pathname;
+    // 登录相关页面一律不弹
+    if (path.indexOf('/login') === 0) { cb(false); return; }
+    try {
+      var req = indexedDB.open('chatgpt2api');
+      req.onupgradeneeded = function(){ try { req.transaction.abort(); } catch(e){} cb(false); };
+      req.onerror = function(){ cb(false); };
+      req.onsuccess = function(){
+        var db = req.result;
+        try {
+          if (!db.objectStoreNames.contains('auth')) { db.close(); cb(false); return; }
+          var g = db.transaction('auth').objectStore('auth').get('chatgpt2api_auth_key');
+          g.onsuccess = function(){
+            var v = g.result;
+            db.close();
+            // 有 key 且非空才算登录
+            cb(!!(v && (v.key || (typeof v === 'string' ? v : ''))));
+          };
+          g.onerror = function(){ db.close(); cb(false); };
+        } catch (e) { try { db.close(); } catch(e2){} cb(false); }
+      };
+    } catch (e) { cb(false); }
+  }
+
+  function maybeAutoStart(tries){
+    tries = tries || 0;
+    loggedIn(function(ok){
+      if (ok) {
+        if (!done()) setTimeout(function(){ start(false); }, 600);
+        return;
+      }
+      // 未登录：等用户登录完（最多等 60 秒，每 1.5 秒看一次）
+      if (tries < 40) setTimeout(function(){ maybeAutoStart(tries + 1); }, 1500);
+    });
+  }
+
   document.addEventListener('DOMContentLoaded', function(){
     // 只在首页和对话页自动弹，避免在设置/日志页打断操作
     var p = location.pathname;
     var auto = (p === '/' || p === '/p/chat' || p === '/p/chat/');
     if (auto && !done()){
-      setTimeout(function(){ start(false); }, 700);
+      maybeAutoStart(0);
     }
   });
 })();

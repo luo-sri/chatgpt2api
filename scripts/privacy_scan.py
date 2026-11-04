@@ -29,6 +29,7 @@ ALLOW = [
     "my-secret-2026",
     "你的key",
     "sk-Lc6_",           # 全新部署时自动生成的示例，不含个人身份
+    "C2A_NEVER_MATCH_PLACEHOLDER",   # 占位符本身
 ]
 
 PATTERNS = [
@@ -38,7 +39,7 @@ PATTERNS = [
     ("订阅链接", re.compile(r"https?://[a-z0-9.-]*(?:ktm|jichang|jiedian|sub|v2ray|clash)[a-z0-9.-]*\.(?:cc|com|net|xyz|top)/", re.I)),
     ("代理节点密码", re.compile(r"password:\s*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}", re.I)),
     # 旧登录口令：从本机环境读取，不把真实口令写进代码
-    ("旧登录口令", re.compile(os.environ.get("C2A_OLD_KEY") or "___never_match___")),
+    ("旧登录口令", re.compile(os.environ.get("C2A_OLD_KEY") or "C2A_NEVER_MATCH_PLACEHOLDER")),
 ]
 
 # data 目录允许存在的

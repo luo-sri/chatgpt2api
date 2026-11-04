@@ -147,6 +147,7 @@ def patch_all():
         "canvas": remove_canvas(),
         "brand": patch_brand(),
         "appver": patch_app_version(),
+        "loginhint": patch_login_hint(),
     }
     # 只有前面补丁都成功，才重命名 chunk（否则 HTML 会指向带 -patched
     # 后缀的文件，但内容还是旧的）
@@ -281,6 +282,109 @@ MODELS_MARK = "c2a-model-switch"
 MODELS_LOGIC_MARK = "/*c2a-model-logic*/"
 TITLE_FULL = ('children:["系统可用模型",(0,t.jsxs)("span",{className:"ml-1 text-stone-400",'
               'children:["(",o.length,")"]})')
+
+
+LOGIN_CHUNK = "09w1mtjfpccow.js"
+LOGIN_MARK = "c2a-login-hint"
+
+
+def patch_login_hint():
+    """登录页：提示默认密码，并提醒首次登录后立即修改。
+
+    做法：把一段原生 JS 追加到登录页 chunk 末尾。
+    它用 MutationObserver 等 React 渲染完输入框后，在下面插入提示块。
+    不改 React 状态、不碰登录逻辑，所以不会影响登录本身。
+
+    为什么要提示：
+      本项目出厂密码是 changeme，用户第一次打开根本不知道该填什么，
+      而且不改的话任何人拿到地址就能登进来。必须两端都提示。
+    """
+    target = os.path.join(CHUNK_DIR, LOGIN_CHUNK)
+    if not os.path.exists(target):
+        return ("skip", "找不到登录页 chunk")
+    src = open(target, encoding="utf-8").read()
+    if LOGIN_MARK in src:
+        return ("already", "登录页密码提示已注入")
+
+    js = """
+/*c2a-login-hint*/
+(function(){
+  if (window.__c2aLoginHint) return;
+  window.__c2aLoginHint = 1;
+
+  var CSS = ''
+    + '.c2a-lh{margin-top:14px;border-radius:14px;border:1px solid #fde68a;'
+    + 'background:#fffbeb;padding:12px 14px;font-size:12.5px;line-height:1.7;color:#78350f}'
+    + '.c2a-lh .c2a-lh-t{font-weight:650;color:#b45309;margin-bottom:4px}'
+    + '.c2a-lh code{background:#fef3c7;border-radius:4px;padding:1px 6px;'
+    + 'font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px;color:#92400e}'
+    + '.c2a-lh .c2a-lh-w{margin-top:6px;color:#a16207;font-size:12px}'
+    + '.dark .c2a-lh{background:rgba(120,53,15,.22);border-color:rgba(253,230,138,.25);color:#fde68a}'
+    + '.dark .c2a-lh .c2a-lh-t{color:#fcd34d}'
+    + '.dark .c2a-lh code{background:rgba(253,230,138,.16);color:#fde68a}'
+    + '.dark .c2a-lh .c2a-lh-w{color:#d6d3d1}';
+
+  function addStyle(){
+    if (document.getElementById('c2a-lh-css')) return;
+    var st = document.createElement('style');
+    st.id = 'c2a-lh-css';
+    st.textContent = CSS;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  function inject(){
+    if (document.getElementById('c2a-lh')) return true;
+    var inp = document.getElementById('auth-key');
+    if (!inp) return false;
+    addStyle();
+    var box = document.createElement('div');
+    box.id = 'c2a-lh';
+    box.className = 'c2a-lh';
+    box.innerHTML = ''
+      + '<div class="c2a-lh-t">初始密码：<code>changeme</code></div>'
+      + '<div>首次使用请直接用这个密码登录。</div>'
+      + '<div class="c2a-lh-w">⚠️ 登录后请立即修改密码：'
+      + '修改本机 <code>.env</code> 里的 '
+      + '<code>CHATGPT2API_AUTH_KEY</code>，然后执行 '
+      + '<code>docker compose up -d</code> 生效。</div>';
+    // 插到输入框外层容器之后（紧跟输入框，视觉上属于表单）
+    var host = inp.closest('form') || inp.parentElement;
+    while (host && host.parentElement && host.tagName !== 'BODY') {
+      // 找到包含输入框的最外层表单块
+      if (host.parentElement.querySelectorAll('#auth-key').length > 1) break;
+      break;
+    }
+    var anchor = inp.closest('div.space-y-3') || inp.parentElement;
+    if (anchor && anchor.parentElement) {
+      anchor.parentElement.insertBefore(box, anchor.nextSibling);
+    } else {
+      inp.parentElement.appendChild(box);
+    }
+    return true;
+  }
+
+  function start(){
+    if (inject()) return;
+    // React 还没渲染完，观察 DOM
+    var mo = new MutationObserver(function(){
+      if (inject()) { mo.disconnect(); }
+    });
+    mo.observe(document.documentElement, {childList: true, subtree: true});
+    // 15 秒后放弃（不是登录页就不折腾了）
+    setTimeout(function(){ mo.disconnect(); }, 15000);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', start);
+  } else {
+    start();
+  }
+})();
+"""
+
+    src = src.rstrip() + js
+    open(target, "w", encoding="utf-8", newline="").write(src)
+    return ("ok", "登录页已加入默认密码提示")
 
 
 def patch_app_version():

@@ -42,11 +42,11 @@ RUN chmod +x /usr/local/bin/mihomo
 
 # ---------- 3. 预置 MMDB（避免启动时联网）----------
 RUN mkdir -p /root/.config/mihomo
-COPY Country.mmdb /root/.config/mihomo/Country.mmdb
-COPY geosite.dat /root/.config/mihomo/geosite.dat
+COPY assets/mihomo/Country.mmdb /root/.config/mihomo/Country.mmdb
+COPY assets/mihomo/geosite.dat /root/.config/mihomo/geosite.dat
 
 # ---------- 4. 预装依赖（离线 wheel）----------
-COPY wheels/ /tmp/wheels/
+COPY assets/wheels/ /tmp/wheels/
 RUN uv pip install --python /app/.venv/bin/python \
         --no-index --find-links /tmp/wheels \
         httpx httpcore h11 anyio sniffio idna 2>&1 | tail -3 \
@@ -55,24 +55,27 @@ RUN uv pip install --python /app/.venv/bin/python \
 
 # ---------- 5. 网关与 WebUI ----------
 RUN mkdir -p /opt/gateway /app/data
-COPY gateway.py        /opt/gateway/gateway.py
-COPY webui.py          /opt/gateway/webui.py
-COPY chat_page.py      /opt/gateway/chat_page.py
-COPY proxy_page.py     /opt/gateway/proxy_page.py
-COPY stream_clean.py   /opt/gateway/stream_clean.py
-COPY webapi.py         /opt/gateway/webapi.py
-COPY oauth_page.py     /opt/gateway/oauth_page.py
-COPY cdpeval.py        /opt/gateway/cdpeval.py
-COPY patch_webdist.py  /opt/gateway/patch_webdist.py
-COPY auth_proxy.py     /opt/gateway/auth_proxy.py
-COPY jsx_clean.py      /opt/gateway/jsx_clean.py
-COPY config.ini        /opt/gateway/config.ini
-COPY mihomo-config.yaml /opt/mihomo-config.yaml
+# 应用代码：app/ 根目录模块 + app/pages/ 页面模块，统一放到 /opt/gateway
+COPY app/gateway.py        /opt/gateway/gateway.py
+COPY app/webui.py          /opt/gateway/webui.py
+COPY app/webapi.py         /opt/gateway/webapi.py
+COPY app/console.py        /opt/gateway/console.py
+COPY app/entry.py          /opt/gateway/entry.py
+COPY app/auth_proxy.py     /opt/gateway/auth_proxy.py
+COPY app/jsx_clean.py      /opt/gateway/jsx_clean.py
+COPY app/stream_clean.py   /opt/gateway/stream_clean.py
+COPY app/cdpeval.py        /opt/gateway/cdpeval.py
+COPY app/patch_webdist.py  /opt/gateway/patch_webdist.py
+COPY app/pages/chat_page.py     /opt/gateway/chat_page.py
+COPY app/pages/proxy_page.py    /opt/gateway/proxy_page.py
+COPY app/pages/oauth_page.py    /opt/gateway/oauth_page.py
+COPY app/pages/onboarding.py    /opt/gateway/onboarding.py
+COPY config.ini            /opt/gateway/config.ini
+COPY assets/mihomo-config.yaml /opt/mihomo-config.yaml
 
-COPY browser.sh /opt/browser.sh
-COPY backup.sh  /opt/backup.sh
-COPY start.sh   /opt/start.sh
-COPY onboarding.py /opt/gateway/onboarding.py
+COPY scripts/browser.sh /opt/browser.sh
+COPY scripts/backup.sh  /opt/backup.sh
+COPY scripts/start.sh   /opt/start.sh
 RUN chmod +x /opt/start.sh /opt/backup.sh /opt/browser.sh
 
 # 品牌版本号：面板顶部与系统信息读的都是 /app/VERSION

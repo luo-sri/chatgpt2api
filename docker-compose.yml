@@ -24,7 +24,7 @@ services:
       - ./data:/app/data
       # config.json 不挂载：密钥统一由下面的环境变量注入，
       # 避免把含密钥的文件带进仓库
-      - ./mihomo-config.yaml:/root/.config/mihomo/config.yaml
+      - ./assets/mihomo-config.yaml:/root/.config/mihomo/config.yaml
     environment:
       - TZ=Asia/Shanghai
       - STORAGE_BACKEND=json

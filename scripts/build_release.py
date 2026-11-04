@@ -17,33 +17,40 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUT = os.path.abspath(os.path.join(HERE, "..", "..", "_publish"))
 
 # ---- 要发布的源码文件（根目录）----
+# 目录结构（v2.0.0 起重组，根目录只留少数关键文件）
 FILES = [
+    # 根目录
     "Dockerfile",
     "docker-compose.yml",
-    "start.sh",
-    "browser.sh",
-    "backup.sh",
     "deploy.sh",
-    "gateway.py",
-    "webui.py",
-    "webapi.py",
-    "chat_page.py",
-    "proxy_page.py",
-    "oauth_page.py",
-    "onboarding.py",
-    "stream_clean.py",
-    "jsx_clean.py",
-    "cdpeval.py",
-    "patch_webdist.py",
-    "auth_proxy.py",
-    "console.py",
-    "entry.py",
     "config.ini",
-    "selfcheck.py",
-    "cleanup_for_publish.py",
-    "privacy_scan.py",
-    "build_release.py",
-    "mihomo-config.template.yaml",
+    # 应用代码
+    "app/gateway.py",
+    "app/webui.py",
+    "app/webapi.py",
+    "app/console.py",
+    "app/entry.py",
+    "app/auth_proxy.py",
+    "app/jsx_clean.py",
+    "app/stream_clean.py",
+    "app/cdpeval.py",
+    "app/patch_webdist.py",
+    "app/pages/chat_page.py",
+    "app/pages/proxy_page.py",
+    "app/pages/oauth_page.py",
+    "app/pages/onboarding.py",
+    # 脚本（容器内启动用）
+    "scripts/start.sh",
+    "scripts/browser.sh",
+    "scripts/backup.sh",
+    # 工具
+    "scripts/selfcheck.py",
+    "scripts/cleanup_for_publish.py",
+    "scripts/privacy_scan.py",
+    "scripts/build_release.py",
+    # 资源
+    "assets/mihomo-config.yaml",
+    "assets/mihomo-config.template.yaml",
 ]
 
 # ---- 配置文件示例（不能带真实值）----
@@ -59,7 +66,7 @@ CHATGPT2API_AUTH_KEY=changeme
 # 时区
 TZ=Asia/Shanghai
 """,
-    "mihomo-config.yaml": """# 占位文件：首次部署后请到「代理设定」页粘贴你的订阅链接，
+    "assets/mihomo-config.yaml": """# 占位文件：首次部署后请到「代理设定」页粘贴你的订阅链接，
 # 系统会自动填充节点。详见 mihomo-config.template.yaml
 mixed-port: 7890
 allow-lan: false
@@ -122,6 +129,23 @@ def main():
             continue
         cp(s, os.path.join(OUT, f))
         n += 1
+
+    # 二进制资源（地理库 + 离线 wheel）
+    import glob
+    for rel in ("assets/mihomo/Country.mmdb", "assets/mihomo/geosite.dat"):
+        sp = os.path.join(HERE, rel)
+        if os.path.isfile(sp):
+            cp(sp, os.path.join(OUT, rel))
+            n += 1
+        else:
+            missing.append(rel)
+    whl = glob.glob(os.path.join(HERE, "assets", "wheels", "*.whl"))
+    if whl:
+        for w in whl:
+            cp(w, os.path.join(OUT, "assets", "wheels", os.path.basename(w)))
+            n += 1
+    else:
+        missing.append("assets/wheels/*.whl")
 
     for name, content in TEMPLATES.items():
         p = os.path.join(OUT, name.replace("/", os.sep))

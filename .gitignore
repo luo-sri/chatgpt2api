@@ -42,8 +42,8 @@ _*.html
 dbg*.py
 *.bak
 *.tmp
-.# wheels/ 是离线依赖包，构建必需，保留
-# wheels/ 是离线依赖包，构建必需，保留
+.# assets/wheels/ 是离线依赖包，构建必需，保留
+# assets/wheels/ 是离线依赖包，构建必需，保留
 
 # ========== 系统 ==========
 .DS_Store
@@ -60,3 +60,11 @@ desktop.ini
 *.tar
 *.tar.gz
 *.zip
+
+# 本地调试残留（发布时会过滤）
+_*.png
+_*.webp
+_*.py
+_*.js
+_*.html
+_old.png
