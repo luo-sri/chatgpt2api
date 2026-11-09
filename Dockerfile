@@ -18,7 +18,7 @@ LABEL org.opencontainers.image.description="ChatGPT web accounts to OpenAI-compa
 LABEL org.opencontainers.image.url="https://github.com/luo-sri/chatgpt2api"
 LABEL org.opencontainers.image.source="https://github.com/luo-sri/chatgpt2api"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
-LABEL org.opencontainers.image.version="2.2.0"
+LABEL org.opencontainers.image.version="2.3.0"
 
 USER root
 
@@ -66,6 +66,8 @@ COPY app/jsx_clean.py      /opt/gateway/jsx_clean.py
 COPY app/stream_clean.py   /opt/gateway/stream_clean.py
 COPY app/cdpeval.py        /opt/gateway/cdpeval.py
 COPY app/patch_webdist.py  /opt/gateway/patch_webdist.py
+COPY app/update_ui.py      /opt/gateway/update_ui.py
+COPY app/update_service.py /opt/gateway/update_service.py
 COPY app/pages/chat_page.py     /opt/gateway/chat_page.py
 COPY app/pages/proxy_page.py    /opt/gateway/proxy_page.py
 COPY app/pages/oauth_page.py    /opt/gateway/oauth_page.py
@@ -79,7 +81,7 @@ COPY scripts/start.sh   /opt/start.sh
 RUN chmod +x /opt/start.sh /opt/backup.sh /opt/browser.sh
 
 # 品牌版本号：面板顶部与系统信息读的都是 /app/VERSION
-RUN printf '2.2.0' > /app/VERSION
+RUN printf '2.3.0' > /app/VERSION
 
 EXPOSE 3000 8888 6080
 

@@ -35,13 +35,22 @@ try:
     import webapi
     import oauth_page
     import auth_proxy
+    import update_ui
     from onboarding import onboarding_script
     ONBOARDING_JS = onboarding_script()
+    UPDATE_UI_JS = update_ui.update_ui_script(
+        webui.APP_VERSION, webui.REPO_API, webui.REPO_URL,
+        "https://raw.githubusercontent.com/%s/%s/main/VERSION" % (
+            webui.REPO_OWNER, webui.REPO_NAME),
+        "https://raw.githubusercontent.com/%s/%s/main/CHANGELOG.md" % (
+            webui.REPO_OWNER, webui.REPO_NAME),
+    )
     _PAGES = webui.render_pages()
 except Exception:
     webui = None
     webapi = None
     ONBOARDING_JS = ""
+    UPDATE_UI_JS = ""
     _PAGES = {}
 
 NAVBAR = r"""
@@ -297,109 +306,245 @@ NAVBAR = r"""
     mo.observe(document.documentElement, {childList: true, subtree: true});
   }catch(e){}
 
-  // ---------- 设置页：修改登录密码 ----------
-  // 面板把密码放在环境变量里，UI 改不了。这里加一个表单，
-  // 调 /p/api/auth/password 写入 auth-override.json，网关鉴权会优先认它，立即生效。
-  var pwdInjected = false;
-  function injectPwdPanel(){
-    if (pwdInjected) return;
-    if (location.pathname.indexOf('/settings') !== 0) return;
-    // 必须挂到 body 末尾，不能挂进 <main>：
-    // <main> 归 React 管，插入子节点会触发 hydration 报错（#418）并被清除。
-    var host = document.body;
-    if (!host) return;
-    if (document.getElementById('c2a-pwd-card')) { pwdInjected = true; return; }
+  // ---------- 设置页：修改登录密码（内嵌在「基础配置」卡片里）----------
+  // 面板把登录密码放在环境变量里，UI 改不了。这里在设置页「基础配置」卡片内
+  // 直接嵌入一块表单（不再是浮在右下角、关不掉的小窗），
+  // 调 /p/api/auth/password 写入 auth-override.json，网关鉴权优先认它，立即生效。
+  // 保存成功后会清掉本地登录态，要求用新密码重新登录。
+  var pwdObserver = null;
 
-    var card = document.createElement('div');
-    card.id = 'c2a-pwd-card';
-    card.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:2147482000;'
-      + 'width:380px;max-width:calc(100vw - 32px);border-radius:16px;'
-      + 'border:1px solid #e7e5e4;background:#fff;padding:20px;font-family:inherit;'
-      + 'box-shadow:0 20px 60px -12px rgba(0,0,0,.25)';
-    // 可折叠：默认展开，点标题收起
-    card.setAttribute('data-open', '1');
-    card.innerHTML = ''
-      + '<div style="font-size:15px;font-weight:650;color:#1c1917;margin-bottom:4px">修改登录密码</div>'
-      + '<div style="font-size:12.5px;color:#78716c;line-height:1.7;margin-bottom:14px">'
-      + '改完立即生效，不需要重启容器。新密码至少 8 位，需同时包含字母和数字。'
-      + '<br>注意：这是登录控制台的密码，不是给 AI 客户端用的 <code style="background:#f5f5f4;'
-      + 'padding:1px 5px;border-radius:4px">sk-</code> 开头的 API Key。</div>'
-      + '<div style="display:flex;flex-direction:column;gap:10px;max-width:420px">'
-      + '<input id="c2a-pwd-cur" type="password" placeholder="当前密码" autocomplete="current-password" '
-      + 'style="height:40px;border:1px solid #d6d3d1;border-radius:10px;padding:0 12px;font-size:13px">'
-      + '<input id="c2a-pwd-new" type="password" placeholder="新密码（≥8 位，含字母和数字）" '
-      + 'autocomplete="new-password" style="height:40px;border:1px solid #d6d3d1;border-radius:10px;'
-      + 'padding:0 12px;font-size:13px">'
-      + '<input id="c2a-pwd-new2" type="password" placeholder="再次输入新密码" '
-      + 'autocomplete="new-password" style="height:40px;border:1px solid #d6d3d1;border-radius:10px;'
-      + 'padding:0 12px;font-size:13px">'
-      + '<div id="c2a-pwd-msg" style="font-size:12.5px;min-height:18px"></div>'
-      + '<div style="display:flex;gap:10px">'
-      + '<button id="c2a-pwd-save" style="height:40px;padding:0 18px;border:0;border-radius:10px;'
-      + 'background:#1c1917;color:#fff;font-size:13px;cursor:pointer">保存新密码</button>'
-      + '<button id="c2a-pwd-reset" style="height:40px;padding:0 16px;border:1px solid #e7e5e4;'
-      + 'border-radius:10px;background:#fff;color:#78716c;font-size:13px;cursor:pointer">'
-      + '恢复环境变量密码</button>'
-      + '</div></div>';
+  function pwdCss(){
+    if (document.getElementById('c2a-pwd-css')) return;
+    var st = document.createElement('style');
+    st.id = 'c2a-pwd-css';
+    st.textContent = ''
+      + '#c2a-pwd-box{margin-top:16px;padding-top:16px;'
+      + 'border-top:1px solid rgba(28,25,23,.08);font-family:inherit}'
+      + '#c2a-pwd-box .c2a-pwd-row{display:flex;align-items:flex-start;gap:12px}'
+      + '#c2a-pwd-box .c2a-pwd-main{flex:1;min-width:0}'
+      + '#c2a-pwd-box .c2a-pwd-t{font-size:13.5px;font-weight:600;color:#1c1917;line-height:1.6}'
+      + '#c2a-pwd-box .c2a-pwd-d{font-size:12px;color:#78716c;line-height:1.7;margin-top:2px}'
+      + '#c2a-pwd-box .c2a-pwd-btn{border:0;border-radius:9px;padding:7px 14px;'
+      + 'font-size:12.5px;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}'
+      + '#c2a-pwd-box .c2a-pwd-btn.p{background:#1c1917;color:#fff}'
+      + '#c2a-pwd-box .c2a-pwd-btn.p:hover{background:#292524}'
+      + '#c2a-pwd-box .c2a-pwd-btn.p:disabled{background:#d6d3d1;cursor:not-allowed}'
+      + '#c2a-pwd-box .c2a-pwd-btn.g{background:transparent;color:#78716c;'
+      + 'border:1px solid rgba(28,25,23,.14)}'
+      + '#c2a-pwd-box .c2a-pwd-btn.g:hover{background:rgba(28,25,23,.05);color:#1c1917}'
+      + '#c2a-pwd-box .c2a-pwd-form{display:none;margin-top:14px;max-width:420px}'
+      + '#c2a-pwd-box .c2a-pwd-form.on{display:block}'
+      + '#c2a-pwd-box input{width:100%;height:38px;box-sizing:border-box;'
+      + 'border:1px solid rgba(28,25,23,.14);border-radius:9px;padding:0 12px;'
+      + 'font-size:13px;font-family:inherit;color:#1c1917;background:#fff;margin-bottom:9px}'
+      + '#c2a-pwd-box input:focus{outline:none;border-color:#a8a29e}'
+      + '#c2a-pwd-box .c2a-pwd-msg{font-size:12.5px;min-height:18px;line-height:1.6;margin:2px 0 8px}'
+      + '#c2a-pwd-box .c2a-pwd-msg.ok{color:#16a34a}'
+      + '#c2a-pwd-box .c2a-pwd-msg.bad{color:#dc2626}'
+      + '#c2a-pwd-box .c2a-pwd-ops{display:flex;gap:9px;flex-wrap:wrap;align-items:center}'
+      + '.dark #c2a-pwd-box{border-color:rgba(245,245,244,.1)}'
+      + '.dark #c2a-pwd-box .c2a-pwd-t{color:#f5f5f4}'
+      + '.dark #c2a-pwd-box .c2a-pwd-d{color:#a8a29e}'
+      + '.dark #c2a-pwd-box .c2a-pwd-btn.p{background:#f5f5f4;color:#1c1917}'
+      + '.dark #c2a-pwd-box .c2a-pwd-btn.p:hover{background:#e7e5e4}'
+      + '.dark #c2a-pwd-box .c2a-pwd-btn.g{color:#a8a29e;'
+      + 'border-color:rgba(245,245,244,.16)}'
+      + '.dark #c2a-pwd-box .c2a-pwd-btn.g:hover{background:rgba(245,245,244,.08);color:#f5f5f4}'
+      + '.dark #c2a-pwd-box input{background:#12100e;'
+      + 'border-color:rgba(245,245,244,.16);color:#f5f5f4}';
+    (document.head || document.documentElement).appendChild(st);
+  }
 
-    host.appendChild(card);
+  /* 把面板存在 IndexedDB 的登录态清掉，才算真正退出 */
+  function clearPanelAuth(){
+    return new Promise(function(res){
+      try {
+        var r = indexedDB.open('chatgpt2api');
+        r.onupgradeneeded = function(){ try { r.transaction.abort(); } catch(e){} };
+        r.onerror = function(){ res(); };
+        r.onsuccess = function(){
+          var db = r.result;
+          try {
+            if (!db.objectStoreNames.contains('auth')) { db.close(); return res(); }
+            var tx = db.transaction('auth', 'readwrite');
+            tx.objectStore('auth').delete('chatgpt2api_auth_key');
+            tx.oncomplete = function(){ db.close(); res(); };
+            tx.onerror = function(){ db.close(); res(); };
+          } catch(e){ try { db.close(); } catch(e2){} res(); }
+        };
+      } catch(e){ res(); }
+    });
+  }
 
-    var msg = card.querySelector('#c2a-pwd-msg');
-    function say(t, ok){
-      msg.textContent = t;
-      msg.style.color = ok ? '#16a34a' : '#dc2626';
+  function logoutAfterPwdChange(){
+    ['c2a_remember_key', 'c2a_remember_at', 'c2a_auto_login',
+     'c2a_key', 'c2a_onboarding_step'].forEach(function(k){
+      try { localStorage.removeItem(k); } catch(e){}
+    });
+    clearPanelAuth().then(function(){
+      location.replace('/login');
+    });
+  }
+
+  /* 找到「基础配置」那张卡片。
+     做法：在带 rounded-2xl 的容器里，挑出「包含那句密钥说明、且面积最小」的那个。
+     为什么按面积最小挑：外层还有更宽的同款容器（页面壳、Tabs 容器），
+     只有真正的那张卡片面积最小，这样才不会把表单挂到页面底部去。 */
+  function findBasicCard(){
+    var KEY = '管理员登录密钥继续从部署配置读取';
+    var nodes = document.querySelectorAll('div');
+    var best = null, bestArea = 1e12;
+    for (var i = 0; i < nodes.length; i++){
+      var el = nodes[i];
+      var cls = (el.className || '').toString();
+      if (cls.indexOf('rounded-2xl') < 0) continue;
+      if ((el.textContent || '').indexOf(KEY) < 0) continue;
+      var r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      var area = r.width * r.height;
+      if (area < bestArea){ bestArea = area; best = el; }
+    }
+    return best;
+  }
+
+  function buildPwdBox(){
+    var box = document.createElement('div');
+    box.id = 'c2a-pwd-box';
+    box.innerHTML = ''
+      + '<div class="c2a-pwd-row">'
+      + '  <div class="c2a-pwd-main">'
+      + '    <div class="c2a-pwd-t">修改登录密码</div>'
+      + '    <div class="c2a-pwd-d">'
+      + '这是登录控制台的密码，不是给 AI 客户端用的 <b>sk-</b> 开头 API Key。'
+      + '修改后立即生效，需要用新密码重新登录。</div>'
+      + '  </div>'
+      + '  <button type="button" class="c2a-pwd-btn p" id="c2a-pwd-open">修改密码</button>'
+      + '</div>'
+      + '<div class="c2a-pwd-form" id="c2a-pwd-form">'
+      + '  <input id="c2a-pwd-cur" type="password" placeholder="当前密码"'
+      + ' autocomplete="current-password">'
+      + '  <input id="c2a-pwd-new" type="password"'
+      + ' placeholder="新密码（至少 8 位，需含字母和数字）" autocomplete="new-password">'
+      + '  <input id="c2a-pwd-new2" type="password" placeholder="再次输入新密码"'
+      + ' autocomplete="new-password">'
+      + '  <div class="c2a-pwd-msg" id="c2a-pwd-msg"></div>'
+      + '  <div class="c2a-pwd-ops">'
+      + '    <button type="button" class="c2a-pwd-btn p" id="c2a-pwd-save">保存新密码</button>'
+      + '    <button type="button" class="c2a-pwd-btn g" id="c2a-pwd-cancel">取消</button>'
+      + '    <button type="button" class="c2a-pwd-btn g" id="c2a-pwd-reset">恢复部署密码</button>'
+      + '  </div>'
+      + '</div>';
+
+    var form = box.querySelector('#c2a-pwd-form');
+    var msg = box.querySelector('#c2a-pwd-msg');
+
+    function say(t, kind){
+      msg.textContent = t || '';
+      msg.className = 'c2a-pwd-msg' + (kind ? ' ' + kind : '');
     }
 
-    card.querySelector('#c2a-pwd-save').onclick = function(){
-      var cur = card.querySelector('#c2a-pwd-cur').value;
-      var n1 = card.querySelector('#c2a-pwd-new').value;
-      var n2 = card.querySelector('#c2a-pwd-new2').value;
-      if (!cur || !n1) { say('请填写完整'); return; }
-      if (n1 !== n2) { say('两次输入的新密码不一致'); return; }
-      say('提交中…', true);
-      fetch('/p/api/auth/password', {method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({current: cur, new: n1})})
-        .then(function(r){ return r.json(); })
+    box.querySelector('#c2a-pwd-open').onclick = function(){
+      form.classList.add('on');
+      box.querySelector('#c2a-pwd-open').style.display = 'none';
+      try { box.querySelector('#c2a-pwd-cur').focus(); } catch(e){}
+    };
+
+    // 取消：收起表单、清空输入，恢复到「修改密码」按钮状态
+    box.querySelector('#c2a-pwd-cancel').onclick = function(){
+      form.classList.remove('on');
+      box.querySelector('#c2a-pwd-open').style.display = '';
+      box.querySelector('#c2a-pwd-cur').value = '';
+      box.querySelector('#c2a-pwd-new').value = '';
+      box.querySelector('#c2a-pwd-new2').value = '';
+      say('');
+    };
+
+    box.querySelector('#c2a-pwd-save').onclick = function(){
+      var cur = box.querySelector('#c2a-pwd-cur').value;
+      var n1 = box.querySelector('#c2a-pwd-new').value;
+      var n2 = box.querySelector('#c2a-pwd-new2').value;
+      if (!cur || !n1){ say('请填写当前密码和新密码', 'bad'); return; }
+      if (n1 !== n2){ say('两次输入的新密码不一致', 'bad'); return; }
+      if (n1.length < 8){ say('新密码至少 8 位', 'bad'); return; }
+      if (!/[A-Za-z]/.test(n1) || !/[0-9]/.test(n1)){
+        say('新密码需同时包含字母和数字', 'bad'); return;
+      }
+      var btn = box.querySelector('#c2a-pwd-save');
+      btn.disabled = true;
+      say('提交中…');
+      fetch('/p/api/auth/password', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({current: cur, new: n1})
+      }).then(function(r){ return r.json(); })
         .then(function(d){
-          if (d && d.ok) {
-            say('✅ 密码已更新，请用新密码重新登录（3 秒后跳转）', true);
-            // 清掉记住的旧密码，避免自动登录用旧密码反复失败
-            try {
-              localStorage.removeItem('c2a_remember_key');
-              localStorage.removeItem('c2a_remember_at');
-              localStorage.removeItem('c2a_auto_login');
-            } catch(e){}
-            // 给足时间让用户看到结果，再跳转
-            setTimeout(function(){ location.href = '/login'; }, 3000);
+          if (d && d.ok){
+            say('✅ 密码已更新，正在退出登录…', 'ok');
+            setTimeout(logoutAfterPwdChange, 900);
           } else {
-            say((d && d.error) || '修改失败');
+            btn.disabled = false;
+            say((d && d.error) || '修改失败', 'bad');
           }
         })
-        .catch(function(e){ say('请求失败: ' + e.message); });
+        .catch(function(e){
+          btn.disabled = false;
+          say('请求失败：' + e.message, 'bad');
+        });
     };
 
-    card.querySelector('#c2a-pwd-reset').onclick = function(){
-      if (!confirm('恢复为 .env / 环境变量里的密码？当前设置的新密码将失效。')) return;
-      fetch('/p/api/auth/password/reset', {method:'POST',
-        headers:{'Content-Type':'application/json'}, body:'{}'})
-        .then(function(r){ return r.json(); })
+    box.querySelector('#c2a-pwd-reset').onclick = function(){
+      if (!confirm('恢复为部署配置里的密码？当前设置的新密码将失效。')) return;
+      say('处理中…');
+      fetch('/p/api/auth/password/reset', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'}, body: '{}'
+      }).then(function(r){ return r.json(); })
         .then(function(d){
-          if (d && d.ok) say('✅ 已恢复环境变量密码，请重新登录', true);
-          else say((d && d.error) || '恢复失败');
+          if (d && d.ok){
+            say('✅ 已恢复，正在退出登录…', 'ok');
+            setTimeout(logoutAfterPwdChange, 900);
+          } else {
+            say((d && d.error) || '恢复失败', 'bad');
+          }
         })
-        .catch(function(e){ say('请求失败: ' + e.message); });
+        .catch(function(e){ say('请求失败：' + e.message, 'bad'); });
     };
 
-    pwdInjected = true;
+    return box;
   }
-  try{
-    var mo2 = new MutationObserver(function(){ injectPwdPanel(); });
-    mo2.observe(document.documentElement, {childList: true, subtree: true});
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', injectPwdPanel);
-    } else { injectPwdPanel(); }
-  }catch(e){}
+
+  function mountPwdBox(){
+    if (location.pathname.indexOf('/settings') !== 0) return;
+    if (document.getElementById('c2a-pwd-box')) return;
+    var card = findBasicCard();
+    if (!card) return;
+    pwdCss();
+    card.appendChild(buildPwdBox());
+  }
+
+  function watchSettings(){
+    if (pwdObserver) return;
+    // React 重渲染会把这个节点抹掉，观察并补回（自己移除时不补）
+    pwdObserver = new MutationObserver(function(){
+      if (location.pathname.indexOf('/settings') !== 0) return;
+      if (document.getElementById('c2a-pwd-box')) return;
+      mountPwdBox();
+    });
+    pwdObserver.observe(document.body, {childList: true, subtree: true});
+    mountPwdBox();
+  }
+
+  // 等 React 把设置页渲染完再插（避免 hydration 报错 #418）
+  var pwdTries = 0;
+  var pwdTimer = setInterval(function(){
+    pwdTries++;
+    if (location.pathname.indexOf('/settings') === 0 && findBasicCard()){
+      clearInterval(pwdTimer);
+      watchSettings();
+      return;
+    }
+    if (pwdTries > 40) clearInterval(pwdTimer);
+  }, 350);
 
   // ---------- 复用面板登录态 ----------
   function mirrorKey(){
@@ -515,7 +660,8 @@ def inject_navbar(html):
     """
     if not html or "__c2aNav" in html:
         return html
-    pay = NAVBAR + ONBOARDING_JS
+    # 导航条 + 首次引导 + 版本面板（原生页的版本按钮由后者接管）
+    pay = NAVBAR + ONBOARDING_JS + UPDATE_UI_JS
     low = html.lower()
     i = low.rfind("</body>")
     if i < 0:
@@ -565,6 +711,23 @@ DEFAULT_MODEL = CFG["default_model"]
 #
 # 现在统一收口成下面这组函数，所有涉及图片的响应都走它。
 _LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]")
+
+
+def current_app_version():
+    """当前版本号。
+
+    优先读 /app/VERSION 文件 —— 「页内更新」会同时更新这个文件，
+    这样更新完重启网关后，/health 和版本面板立刻显示新版本。
+    读不到再退回代码里的常量（没挂载文件时也能工作）。
+    """
+    try:
+        with open("/app/VERSION", encoding="utf-8") as f:
+            v = f.read().strip()
+        if v:
+            return v if v.startswith("v") else ("v" + v)
+    except Exception:
+        pass
+    return getattr(webui, "APP_VERSION", "") if webui else ""
 
 
 def _public_base(headers):
@@ -1478,6 +1641,13 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     html = data.decode("utf-8", "replace")
                     html = inject_navbar(html)
+                    # 原生页不经过 _with_key，这里补一次 key 注入，
+                    # 让版本面板的「一键更新」也能带上鉴权
+                    try:
+                        _pk = self._page_api_key().replace("'", "").replace('"', "")
+                        html = html.replace("__C2A_PAGE_KEY__", _pk)
+                    except Exception:
+                        html = html.replace("__C2A_PAGE_KEY__", "")
                     data = html.encode("utf-8")
                     ctype = "text/html; charset=utf-8"
                 except Exception:
@@ -1698,7 +1868,10 @@ class Handler(BaseHTTPRequestHandler):
         """
         try:
             key = self._page_api_key().replace("'", "").replace('"', "")
-            return html.replace("__C2A_KEY__", key)
+            html = html.replace("__C2A_KEY__", key)
+            # 版本面板里「一键更新」需要带鉴权，这里把 key 也注入进去
+            html = html.replace("__C2A_PAGE_KEY__", key)
+            return html
         except Exception:
             return html
 
@@ -1814,7 +1987,7 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             self._json(200, {"status": "ok", "mihomo": mihomo_ok,
                              "novnc": novnc_ok, "nodes": node_cnt,
-                             "version": getattr(webui, "APP_VERSION", "")})
+                             "version": current_app_version()})
             return
 
         # 同源 noVNC 代理：/vnc/* 直接转发到容器内 6080，
@@ -1875,6 +2048,19 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/p/api/auth/password":
                 self._json(200, {"changed": bool(webapi.auth_override_key())})
+                return
+            if path == "/p/api/update/info":
+                # 检查是否有新版本，并带回该版本的更新说明
+                try:
+                    import update_service as _us
+                    # 更新源可配置（默认 GitHub raw，可用 C2A_UPDATE_SOURCE 换成镜像/内网）
+                    raw_base = _us.raw_base()
+                    info = _us.check(None, raw_base)
+                except Exception as e:
+                    info = {"current": current_app_version(),
+                            "latest": "", "notes": "", "can_update": False,
+                            "error": str(e)[:150]}
+                self._json(200, info)
                 return
             if path == "/p/api/proxy":
                 try:
@@ -1963,6 +2149,32 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/p/api/onboarding":
                 self._json(200, webapi.set_onboarding(bool(body.get("done", True))))
+                return
+
+            # 项目内一键更新：下载新版代码 → 校验 → 落盘 → 重启
+            if path == "/p/api/update/apply":
+                # 安全：执行更新属于高危操作，必须校验身份。
+                # 页面上调用时会带 Authorization 头（Bearer <登录口令或 sk- key>）。
+                if not self._auth_ok():
+                    self._json(401, {"ok": False,
+                                     "error": "需要登录后才能执行更新"})
+                    return
+                try:
+                    import update_service as _us
+                    # 更新源可配置（默认 GitHub raw，可用 C2A_UPDATE_SOURCE 换成镜像/内网）
+                    raw_base = _us.raw_base()
+                    r = _us.apply_update(None, raw_base,
+                                         (body.get("version") or "").strip())
+                except Exception as e:
+                    r = {"ok": False, "error": str(e)[:200]}
+                self._json(200, r if isinstance(r, dict) else {"ok": False})
+                if r.get("ok"):
+                    # 代码已落盘，让容器重启生效。
+                    # 网关重启不了自己：直接退出，由 start.sh 的保活循环
+                    # 发现 health 不通 → 容器退出 → docker 按
+                    # restart: unless-stopped 自动拉起。
+                    import threading as _th
+                    _th.Timer(1.2, lambda: os._exit(0)).start()
                 return
 
             # 设置页改登录密码（立即生效，不用重建容器）

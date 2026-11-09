@@ -27,7 +27,7 @@ MIHOMO = "http://127.0.0.1:9090"
 
 # ---------------------------------------------------------------- 品牌信息
 APP_NAME = "ChatGPT2API"
-APP_VERSION = "v2.2.0"
+APP_VERSION = "v2.3.0"
 REPO_OWNER = "luo-sri"
 REPO_NAME = "chatgpt2api"
 REPO_URL = "https://github.com/%s/%s" % (REPO_OWNER, REPO_NAME)
@@ -76,73 +76,22 @@ THEME_JS = """<script>
 })();
 </script>"""
 
-# 顶栏版本号：点击检查 GitHub 是否有新版本
-VERSION_JS = """<script>
-(function(){
-  var CUR = '%s';
-  var API = '%s';
-  var HTML_URL = '%s';
-  var RAW_VER = '%s';
-  function toast(t, ok){
-    var d = document.createElement('div');
-    d.textContent = t;
-    d.style.cssText = 'position:fixed;left:50%%;top:70px;transform:translateX(-50%%);'
-      + 'background:' + (ok === false ? 'rgba(185,28,28,.95)' : 'rgba(28,25,23,.95)')
-      + ';color:#fff;padding:9px 18px;border-radius:10px;font-size:13px;z-index:2147483000;'
-      + 'pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.18)';
-    document.body.appendChild(d);
-    setTimeout(function(){ try{ d.remove(); }catch(e){} }, 2600);
-  }
-  function cmp(a, b){
-    a = String(a).replace(/^v/i, '').split('.').map(Number);
-    b = String(b).replace(/^v/i, '').split('.').map(Number);
-    for (var i = 0; i < Math.max(a.length, b.length); i++){
-      var x = a[i] || 0, y = b[i] || 0;
-      if (x > y) return 1;
-      if (x < y) return -1;
-    }
-    return 0;
-  }
-  document.addEventListener('DOMContentLoaded', function(){
-    var btn = document.getElementById('c2a-ver');
-    if (!btn) return;
-    btn.onclick = function(){
-      btn.textContent = '检查中…';
-      // 优先读仓库根目录的 VERSION 文件（不受 API 限流影响），
-      // 读不到再退回 GitHub API
-      fetch(RAW_VER, {cache: 'no-store'})
-        .then(function(r){ if (!r.ok) throw new Error('raw HTTP ' + r.status); return r.text(); })
-        .then(function(txt){
-          var v = String(txt || '').trim().split(String.fromCharCode(10))[0].trim();
-          if (!v) throw new Error('VERSION 为空');
-          return {tag_name: v.charAt(0) === 'v' ? v : ('v' + v)};
-        })
-        .catch(function(){
-          return fetch(API, {headers: {'Accept': 'application/vnd.github+json'}, cache: 'no-store'})
-            .then(function(r){ if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); });
-        })
-        .then(function(d){
-          btn.textContent = CUR;
-          var latest = d.tag_name || d.name || '';
-          if (!latest) { toast('未获取到版本信息'); return; }
-          if (cmp(latest, CUR) > 0){
-            toast('发现新版本 ' + latest + '（当前 ' + CUR + '），点击前往下载', true);
-            btn.style.color = '#16a34a';
-            btn.title = '有新版本 ' + latest;
-            setTimeout(function(){ window.open(HTML_URL + '/releases', '_blank'); }, 900);
-          } else {
-            toast('已是最新版本 ' + CUR);
-          }
-        })
-        .catch(function(e){
-          btn.textContent = CUR;
-          toast('检查更新失败：' + e.message, false);
-        });
-    };
-  });
-})();
-</script>""" % (APP_VERSION, REPO_API, REPO_URL,
-       "https://raw.githubusercontent.com/%s/%s/main/VERSION" % (REPO_OWNER, REPO_NAME))
+def _update_ui_js():
+    """版本面板脚本（自有页面用）。
+
+    与原生页面共用 update_ui.py 里的同一份实现，
+    保证「点版本号看更新内容 / 一键更新」在两类页面表现一致。
+    """
+    try:
+        import update_ui
+        return update_ui.update_ui_script(
+            APP_VERSION, REPO_API, REPO_URL,
+            "https://raw.githubusercontent.com/%s/%s/main/VERSION" % (REPO_OWNER, REPO_NAME),
+            "https://raw.githubusercontent.com/%s/%s/main/CHANGELOG.md" % (REPO_OWNER, REPO_NAME),
+        )
+    except Exception:
+        return ""
+
 
 BASE_CSS = """
 /* 注意：不要用 *{margin:0;padding:0} 这种非分层重置——
@@ -235,7 +184,7 @@ def native_shell(active_href, title, body_html, extra_css=""):
         '<link rel="icon" href="/favicon.ico">\n'
         '<link rel="stylesheet" href="/_next/static/chunks/0yvynf4qtqgia.css">\n'
         '<style>' + BASE_CSS + (extra_css or '') + '</style>\n'
-        '</head><body>\n' + THEME_JS + VERSION_JS +
+        '</head><body>\n' + THEME_JS + _update_ui_js() +
         '<main class="' + NATIVE_MAIN + '">\n'
         '  <div class="' + NATIVE_INNER + '">\n'
         '    ' + header + '\n'
