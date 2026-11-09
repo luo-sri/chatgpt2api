@@ -15,6 +15,7 @@
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import urllib.error
@@ -34,8 +35,14 @@ def _default_config():
 
 
 def _default_sub_path():
+    """订阅链接落盘位置。
+
+    必须优先 /app/data（bind mount 持久化目录），
+    否则容器重建后链接丢失，用户每次都要重新粘贴。
+    """
     here = os.path.dirname(os.path.abspath(__file__))
-    for cand in (r"D:\ChatGPT2API\data\subscription.txt",
+    for cand in ("/app/data/subscription.txt",          # 容器内持久化目录（首选）
+                 r"D:\ChatGPT2API\data\subscription.txt",
                  os.path.join(here, "subscription.txt")):
         d = os.path.dirname(cand)
         if os.path.isdir(d):
@@ -308,13 +315,28 @@ def test_all_nodes():
 
 # ---------------------------------------------------------------- 订阅
 def _reload(inner_path):
-    """让 mihomo 重新加载配置。PATCH /configs 最稳（实测 204）"""
-    req = urllib.request.Request(MIHOMO + "/configs?force=true",
-                                 data=json.dumps({"path": inner_path}).encode(),
-                                 method="PATCH")
-    req.add_header("Content-Type", "application/json")
-    with op().open(req, timeout=25) as r:
-        return r.status
+    """让 mihomo 重新加载配置。
+
+    必须用 PUT /configs?force=true。
+    实测 mihomo v1.19.33：PATCH 返回 204 但配置根本不生效（节点列表、log-level
+    都不变），属于「假成功」；只有 PUT 才会真正重载。
+    这里先 PUT，失败再退回 PATCH 兼容老版本。
+    """
+    body = json.dumps({"path": inner_path}).encode()
+    last = None
+    for method in ("PUT", "PATCH"):
+        try:
+            req = urllib.request.Request(MIHOMO + "/configs?force=true",
+                                         data=body, method=method)
+            req.add_header("Content-Type", "application/json")
+            with op().open(req, timeout=25) as r:
+                if r.status in (200, 204):
+                    return r.status
+        except Exception as e:
+            last = e
+    if last:
+        raise last
+    raise RuntimeError("reload failed")
 
 
 def _fetch_sub(url):
@@ -344,21 +366,86 @@ def _fetch_sub(url):
     raise RuntimeError(f"拉取订阅失败：{last}")
 
 
+def _query_dns(name, server, timeout=4):
+    """纯 socket 实现的 A 记录查询（不依赖任何外部命令）。
+
+    为什么不用 nslookup：容器镜像里没有装 dnsutils，
+    subprocess 调 nslookup 永远失败 → _resolve 恒为 None →
+    订阅里的域名节点不会被替换成 IP → 所有节点不可用。
+    """
+    import struct
+    tid = b"\xab\xcd"
+    header = tid + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    qname = b"".join(bytes([len(p)]) + p.encode("ascii")
+                     for p in name.split(".") if p) + b"\x00"
+    packet = header + qname + b"\x00\x01\x00\x01"
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.settimeout(timeout)
+        s.sendto(packet, (server, 53))
+        data, _ = s.recvfrom(2048)
+    finally:
+        s.close()
+
+    qd = struct.unpack("!H", data[4:6])[0]
+    an = struct.unpack("!H", data[6:8])[0]
+    off = 12
+    for _ in range(qd):
+        while off < len(data) and data[off] != 0:
+            off += data[off] + 1
+        off += 5
+    ips = []
+    for _ in range(an):
+        if off >= len(data):
+            break
+        if data[off] & 0xC0 == 0xC0:
+            off += 2
+        else:
+            while off < len(data) and data[off] != 0:
+                off += data[off] + 1
+            off += 1
+        if off + 10 > len(data):
+            break
+        rtype, _, _, rdlen = struct.unpack("!HHIH", data[off:off + 10])
+        off += 10
+        if rtype == 1 and rdlen == 4:
+            ips.append(".".join(str(b) for b in data[off:off + 4]))
+        off += rdlen
+    return ips
+
+
 def _resolve(host):
+    """把订阅里的节点域名解析成 IPv4。
+
+    顺序：多 DNS 投票（阿里/114/腾讯）→ 系统 getaddrinfo → getent 兜底。
+    全程不依赖 nslookup / dig 等外部命令。
+    """
     votes = {}
-    for dns in ("223.5.5.5", "114.114.114.114"):
+    for dns in ("223.5.5.5", "114.114.114.114", "119.29.29.29"):
         try:
-            out = subprocess.run(["nslookup", host, dns], capture_output=True,
-                                 text=True, timeout=12).stdout
-            ips = [i for i in re.findall(r"^Address(?:es)?:\s+(\d+\.\d+\.\d+\.\d+)", out, re.M)
-                   if i != dns]
-            if ips:
-                votes[ips[-1]] = votes.get(ips[-1], 0) + 1
+            for ip in _query_dns(host, dns):
+                votes[ip] = votes.get(ip, 0) + 1
         except Exception:
             continue
-    if not votes:
-        return None
-    return max(votes.items(), key=lambda kv: kv[1])[0]
+    if votes:
+        # 票数最高者优先；票数相同取第一个
+        return max(votes.items(), key=lambda kv: kv[1])[0]
+
+    # 兜底 1：系统解析器（容器内通常可用）
+    try:
+        return socket.getaddrinfo(host, None, socket.AF_INET)[0][4][0]
+    except Exception:
+        pass
+    # 兜底 2：getent（镜像里通常有）
+    try:
+        out = subprocess.run(["getent", "hosts", host], capture_output=True,
+                             text=True, timeout=8).stdout
+        m = re.search(r"\b(\d+\.\d+\.\d+\.\d+)\b", out or "")
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
 
 
 HEAD = """mixed-port: 7890
@@ -375,12 +462,19 @@ dns:
   ipv6: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+  # 引导 DNS：只用于解析下面的 nameserver 主机名，本身不走代理。
+  # 必须留，否则 mihomo 启动时解析 DoH 域名会卡住。
+  default-nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
   nameserver:
     - 223.5.5.5
     - 114.114.114.114
-  fallback:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
+    - 119.29.29.29
+  # 注意：不要用 https://1.1.1.1/dns-query 这类 DoH 作 fallback。
+  # 它们在容器内通常不可达，mihomo 会报
+  #   dns resolve failed: all DNS requests failed, context deadline exceeded
+  # 导致节点域名解析不出来、所有节点不可用。
 """
 
 CDN_RULES = """  - 'DOMAIN-SUFFIX,blob.core.windows.net,DIRECT'
@@ -837,6 +931,114 @@ def set_model_off(models):
 
 def get_model_off():
     return {"off": sorted(_read_model_off())}
+
+
+# ---------------------------------------------------------------- 登录密码覆盖
+# 需求：设置页能改登录密码，改完立即生效，不用碰 .env、不用重建容器。
+#
+# 为什么不能直接写 config.json：
+#   面板的 auth_key 优先级是「环境变量 > config.json」，
+#   只要容器还带着 CHATGPT2API_AUTH_KEY，改 config.json 就永远不生效。
+#
+# 做法：加一层「运行时可覆盖」，优先级 override > env > config，
+#   由网关在鉴权时把「用户设置的新密码」映射成面板真实密钥，
+#   完全不改上游面板代码，也不会把用户锁死在旧密码上。
+AUTH_OVERRIDE_PATH = "/app/data/auth-override.json"
+
+
+def _read_auth_override():
+    try:
+        with open(AUTH_OVERRIDE_PATH, encoding="utf-8") as f:
+            d = json.load(f) or {}
+        return str(d.get("auth_key") or "").strip()
+    except Exception:
+        return ""
+
+
+def auth_override_key():
+    """返回用户通过设置页设置的新密码；没设置过返回空。"""
+    return _read_auth_override()
+
+
+def change_auth_password(current, new_key):
+    """修改登录密码。
+
+    校验：旧密码正确 + 新密码强度（≥8 位、含字母和数字）。
+    写入 /app/data/auth-override.json，网关鉴权链会优先认它，立即生效。
+    """
+    import re as _re
+    cur = str(current or "").strip()
+    nk = str(new_key or "").strip()
+
+    # 旧密码校验：接受当前生效密码（override 优先，其次环境变量/配置）
+    effective = _read_auth_override() or _auth_key()
+    if not cur:
+        return {"ok": False, "error": "请输入当前密码"}
+    if cur != effective:
+        return {"ok": False, "error": "当前密码不正确"}
+
+    if len(nk) < 8:
+        return {"ok": False, "error": "新密码至少 8 位"}
+    if not _re.search(r"[A-Za-z]", nk) or not _re.search(r"\d", nk):
+        return {"ok": False, "error": "新密码需同时包含字母和数字"}
+    if nk == cur:
+        return {"ok": False, "error": "新密码不能与当前密码相同"}
+
+    try:
+        os.makedirs(os.path.dirname(AUTH_OVERRIDE_PATH), exist_ok=True)
+        tmp = AUTH_OVERRIDE_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"auth_key": nk, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")},
+                      f, ensure_ascii=False)
+        os.replace(tmp, AUTH_OVERRIDE_PATH)
+    except Exception as e:
+        return {"ok": False, "error": "写入失败: " + str(e)[:150]}
+    return {"ok": True, "message": "密码已更新，请用新密码重新登录"}
+
+
+def reset_auth_password():
+    """清除覆盖，回到环境变量里的密码（忘记新密码时用）。"""
+    try:
+        if os.path.exists(AUTH_OVERRIDE_PATH):
+            os.remove(AUTH_OVERRIDE_PATH)
+        return {"ok": True, "message": "已恢复为环境变量中的密码"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:150]}
+
+
+# ---------------------------------------------------------------- 新手引导状态
+# 引导「是否看过」从 localStorage 改为后端持久化：
+# localStorage 受「源」影响（192.168.x.x / 域名 / 127.0.0.1 各算一个源），
+# 同一个服务器换地址访问就会又弹一次，用户实际想要的是「这台机器只引导一次」。
+ONBOARDING_PATH = "/app/data/onboarding.json"
+
+
+def _read_onboarding():
+    try:
+        with open(ONBOARDING_PATH, encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def get_onboarding():
+    d = _read_onboarding()
+    return {"done": bool(d.get("done")), "done_at": d.get("done_at") or ""}
+
+
+def set_onboarding(done=True):
+    import time as _t
+    d = {"done": bool(done),
+         "done_at": _t.strftime("%Y-%m-%dT%H:%M:%S") if done else ""}
+    try:
+        os.makedirs(os.path.dirname(ONBOARDING_PATH), exist_ok=True)
+        tmp = ONBOARDING_PATH + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False)
+        os.replace(tmp, ONBOARDING_PATH)
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:150]}
+    return {"ok": True, "done": d["done"], "done_at": d["done_at"]}
 
 
 def save_auto_exclude(node, include):

@@ -23,8 +23,42 @@ ONBOARDING_JS = """<script>
   var LS_KEY = 'c2a_onboarding_done_v2';
   var LS_STEP = 'c2a_onboarding_step';
 
-  function done(){ try{ return localStorage.getItem(LS_KEY) === '1'; }catch(e){ return false; } }
-  function markDone(){ try{ localStorage.setItem(LS_KEY, '1'); }catch(e){} }
+  /* 「是否看过引导」以后端为准（/app/data/onboarding.json）。
+     原因：localStorage 按「源」隔离，192.168.x.x / 域名 / 127.0.0.1 各算一个源，
+     同一台服务器换地址访问就会又弹一次。后端记一次就够了。
+     localStorage 仅作旧版本兼容缓存。 */
+  var serverDone = null;      // null=还没查过
+
+  function lsDone(){
+    try{ return localStorage.getItem(LS_KEY) === '1'; }catch(e){ return false; }
+  }
+
+  function done(){ return serverDone === null ? lsDone() : serverDone; }
+
+  function fetchServer(){
+    return fetch('/p/api/onboarding', {cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        serverDone = !!(d && d.done);
+        // 老用户：后端没记但本地标记过 → 视为已完成，并补写后端
+        if (!serverDone && lsDone()){
+          serverDone = true;
+          fetch('/p/api/onboarding', {method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({done:true})}).catch(function(){});
+        }
+        return serverDone;
+      })
+      .catch(function(){ serverDone = lsDone(); return serverDone; });
+  }
+
+  function markDone(){
+    serverDone = true;
+    try{ localStorage.setItem(LS_KEY, '1'); }catch(e){}
+    fetch('/p/api/onboarding', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({done:true})}).catch(function(){});
+  }
   function getStep(){ try{ return parseInt(localStorage.getItem(LS_STEP) || '0', 10) || 0; }catch(e){ return 0; } }
   function setStep(n){ try{ localStorage.setItem(LS_STEP, String(n)); }catch(e){} }
 
@@ -221,7 +255,9 @@ ONBOARDING_JS = """<script>
     tries = tries || 0;
     loggedIn(function(ok){
       if (ok) {
-        if (!done()) setTimeout(function(){ start(false); }, 600);
+        fetchServer().then(function(isDone){
+          if (!isDone) setTimeout(function(){ start(false); }, 600);
+        });
         return;
       }
       // 未登录：等用户登录完（最多等 60 秒，每 1.5 秒看一次）
@@ -233,7 +269,7 @@ ONBOARDING_JS = """<script>
     // 只在首页和对话页自动弹，避免在设置/日志页打断操作
     var p = location.pathname;
     var auto = (p === '/' || p === '/p/chat' || p === '/p/chat/');
-    if (auto && !done()){
+    if (auto){
       maybeAutoStart(0);
     }
   });

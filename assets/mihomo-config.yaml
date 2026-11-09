@@ -6,7 +6,23 @@ bind-address: 127.0.0.1
 mode: rule
 log-level: warning
 ipv6: false
+unified-delay: true
+tcp-concurrent: true
 external-controller: 127.0.0.1:9090
+
+dns:
+  enable: true
+  ipv6: false
+  enhanced-mode: fake-ip
+  fake-ip-range: 198.18.0.1/16
+  default-nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+  nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
+    - 119.29.29.29
+
 proxy-groups:
   - name: ChatGPT
     type: select
@@ -16,5 +32,11 @@ proxy-groups:
     type: select
     proxies:
       - DIRECT
+
 rules:
-  - MATCH,DIRECT
+  - 'DOMAIN-SUFFIX,blob.core.windows.net,DIRECT'
+  - 'DOMAIN-SUFFIX,azureedge.net,DIRECT'
+  - 'DOMAIN-SUFFIX,azurefd.net,DIRECT'
+  - DOMAIN-SUFFIX,openai.com,ChatGPT
+  - DOMAIN-SUFFIX,chatgpt.com,ChatGPT
+  - MATCH,ChatGPT

@@ -25,12 +25,16 @@ dns:
   ipv6: false
   enhanced-mode: fake-ip
   fake-ip-range: 198.18.0.1/16
+  # 引导 DNS：解析 nameserver 里的主机名用，本身不走代理
+  default-nameserver:
+    - 223.5.5.5
+    - 114.114.114.114
   nameserver:
     - 223.5.5.5
     - 114.114.114.114
-  fallback:
-    - https://1.1.1.1/dns-query
-    - https://8.8.8.8/dns-query
+    - 119.29.29.29
+  # 不要用 https://1.1.1.1/dns-query 这类 DoH：容器内通常不可达，
+  # 会导致节点域名解析失败、所有节点不可用。
 
 # ---------- 订阅（首次使用请填自己的机场链接）----------
 proxy-providers:

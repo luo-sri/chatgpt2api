@@ -8,10 +8,10 @@
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Docker](https://img.shields.io/badge/docker-ready-2496ED.svg?logo=docker)](docs/DEPLOY-DOCKER.md)
-[![Version](https://img.shields.io/badge/version-2.0.0-green.svg)](VERSION)
+[![Version](https://img.shields.io/badge/version-2.1.0-green.svg)](VERSION)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20NAS-lightgrey.svg)](docs/)
 
-[功能特性](#-功能特性) · [界面预览](#-界面预览) · [快速开始](#-快速开始) · [部署指南](#-部署指南) · [API 用法](#-api-用法) · [常见问题](docs/FAQ.md)
+[功能特性](#-功能特性) · [界面预览](#-界面预览) · [快速开始](#-快速开始) · [部署指南](#-部署指南) · [API 用法](#-api-用法) · [更新日志](CHANGELOG.md) · [常见问题](docs/FAQ.md)
 
 </div>
 
@@ -391,6 +391,7 @@ chatgpt2api/
 ├── deploy.sh                     一键部署
 ├── config.ini                    网关配置
 ├── README.md / LICENSE / VERSION
+├── CHANGELOG.md                  更新日志（每个版本改了什么）
 ├── .env.example                  配置示例
 │
 ├── app/                          ★ 应用代码

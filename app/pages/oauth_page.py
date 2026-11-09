@@ -77,7 +77,7 @@ code{background:var(--c-bg2);padding:2px 6px;border-radius:4px;font-size:12.5px}
   <a href="/p/oauth">添加账号</a>
   <a href="/accounts">号池管理</a>
   <span style="flex:1"></span>
-  <span class="c2a-tip">内置浏览器请开 http://localhost:6080</span>
+  <span class="c2a-tip">内置浏览器已内嵌，无需单独开端口</span>
 </div>
 
 <div class="wrap">
@@ -171,7 +171,7 @@ function openBuiltin(){
       + '</div>'
       + '<div style="flex:1;background:#000">'
       + '<iframe id="vnc-frame" style="width:100%;height:100%;border:0" '
-      + 'src="http://' + host + ':6080/vnc.html?autoconnect=1&resize=remote&reconnect=1">'
+      + 'src="/vnc/vnc.html?autoconnect=1&resize=remote&reconnect=1&path=websockify">'
       + '</iframe></div></div>';
     document.body.appendChild(m);
     m.querySelector('#vnc-close').onclick = ()=>{ m.remove(); };

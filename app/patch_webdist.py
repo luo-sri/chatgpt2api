@@ -22,7 +22,7 @@ import re
 import sys
 
 CHUNK_DIR = "/app/web_dist/_next/static/chunks"
-APP_VERSION = "v2.0.0"   # 与 webui.APP_VERSION 保持一致
+APP_VERSION = "v2.1.0"   # 与 webui.APP_VERSION 保持一致
 
 # ---------------- A. 原生导航插入三项 ----------------
 NAV_MARK = "c2a-nav-injected"
@@ -312,6 +312,28 @@ def patch_login_hint():
   if (window.__c2aLoginHint) return;
   window.__c2aLoginHint = 1;
 
+  /* ---------- 登录持久化 ----------
+     面板本身把登录态存在 IndexedDB，浏览器清理/隐私模式/换源都会丢，
+     用户每次打开都要重新输密码。这里补两个能力：
+       · 记住密码：把密钥存 localStorage（30 天），下次打开自动填进输入框
+       · 自动登录：启动时静默校验一次，通过就直接进控制台
+     两者都只在登录页生效，不改面板的登录逻辑。 */
+  var RK = 'c2a_remember_key';
+  var RT = 'c2a_remember_at';
+  var RA = 'c2a_auto_login';
+  var TTL = 30 * 24 * 3600 * 1000;   // 30 天
+
+  function ls(k){ try { return localStorage.getItem(k); } catch(e){ return null; } }
+  function lsSet(k, v){ try { localStorage.setItem(k, v); } catch(e){} }
+  function lsDel(k){ try { localStorage.removeItem(k); } catch(e){} }
+
+  function savedKey(){
+    var v = ls(RK), t = parseInt(ls(RT) || '0', 10);
+    if (!v) return '';
+    if (t && (Date.now() - t) > TTL) { lsDel(RK); lsDel(RT); lsDel(RA); return ''; }
+    return v;
+  }
+
   var CSS = ''
     + '.c2a-lh{margin-top:14px;border-radius:14px;border:1px solid #fde68a;'
     + 'background:#fffbeb;padding:12px 14px;font-size:12.5px;line-height:1.7;color:#78350f}'
@@ -322,7 +344,13 @@ def patch_login_hint():
     + '.dark .c2a-lh{background:rgba(120,53,15,.22);border-color:rgba(253,230,138,.25);color:#fde68a}'
     + '.dark .c2a-lh .c2a-lh-t{color:#fcd34d}'
     + '.dark .c2a-lh code{background:rgba(253,230,138,.16);color:#fde68a}'
-    + '.dark .c2a-lh .c2a-lh-w{color:#d6d3d1}';
+    + '.dark .c2a-lh .c2a-lh-w{color:#d6d3d1}'
+    + '.c2a-lh-opt{display:flex;gap:18px;margin-top:10px;padding-top:9px;'
+    + 'border-top:1px dashed rgba(180,83,9,.28);font-size:12.5px}'
+    + '.c2a-lh-opt label{display:inline-flex;align-items:center;gap:6px;cursor:pointer;'
+    + 'color:#92400e;user-select:none}'
+    + '.c2a-lh-opt input{width:14px;height:14px;cursor:pointer;accent-color:#b45309}'
+    + '.dark .c2a-lh-opt label{color:#fcd34d}';
 
   function addStyle(){
     if (document.getElementById('c2a-lh-css')) return;
@@ -341,12 +369,68 @@ def patch_login_hint():
     box.id = 'c2a-lh';
     box.className = 'c2a-lh';
     box.innerHTML = ''
-      + '<div class="c2a-lh-t">初始密码：<code>changeme</code></div>'
-      + '<div>首次使用请直接用这个密码登录。</div>'
-      + '<div class="c2a-lh-w">⚠️ 登录后请立即修改密码：'
-      + '修改本机 <code>.env</code> 里的 '
-      + '<code>CHATGPT2API_AUTH_KEY</code>，然后执行 '
-      + '<code>docker compose up -d</code> 生效。</div>';
+      + '<div class="c2a-lh-t" id="c2a-lh-title">初始密码：<code>changeme</code></div>'
+      + '<div id="c2a-lh-sub">首次使用请直接用这个密码登录。</div>'
+      + '<div class="c2a-lh-w" id="c2a-lh-warn">⚠️ 登录后请立即修改密码：'
+      + '<a href="/settings" style="color:#b45309;text-decoration:underline">'
+      + '设置页 → 修改登录密码</a>，改完立即生效。</div>'
+      + '<div class="c2a-lh-opt">'
+      + '  <label><input type="checkbox" id="c2a-remember"> 记住密码（30 天）</label>'
+      + '  <label><input type="checkbox" id="c2a-auto"> 自动登录</label>'
+      + '</div>';
+
+    // 密码已被改过 → 不再显示「初始密码 changeme」，否则会误导用户
+    fetch('/p/api/auth/password', {cache:'no-store'})
+      .then(function(r){ return r.json(); })
+      .then(function(d){
+        if (d && d.changed) {
+          var t = document.getElementById('c2a-lh-title');
+          var sub = document.getElementById('c2a-lh-sub');
+          var warn = document.getElementById('c2a-lh-warn');
+          if (t) t.innerHTML = '请输入你的登录密码';
+          if (sub) sub.textContent = '密码已在设置页修改过，与出厂默认值不同。';
+          if (warn) warn.style.display = 'none';
+        }
+      }).catch(function(){});
+
+    // 记住密码 / 自动登录：回填 + 联动
+    setTimeout(function(){
+      var cbR = document.getElementById('c2a-remember');
+      var cbA = document.getElementById('c2a-auto');
+      var sk = savedKey();
+      if (cbR && sk) { cbR.checked = true; }
+      if (cbA && ls(RA) === '1') { cbA.checked = true; }
+      if (cbR && cbA) {
+        cbR.onchange = function(){
+          if (!cbR.checked) { cbA.checked = false; }
+          lsSet(RA, cbA.checked ? '1' : '0');
+        };
+        cbA.onchange = function(){
+          if (cbA.checked) { cbR.checked = true; }
+          lsSet(RA, cbA.checked ? '1' : '0');
+        };
+      }
+      // 回填已记住的密码（不自动提交，除非勾了自动登录）
+      // React 是受控组件：只改一次值会被它下一帧重置，
+      // 所以这里重试多次，直到值真正留在输入框里。
+      if (sk) {
+        var tries = 0;
+        var timer = setInterval(function(){
+          tries++;
+          var el = document.getElementById('auth-key');
+          if (!el || tries > 40) { clearInterval(timer); return; }
+          if (el.value !== sk) {
+            var desc = Object.getOwnPropertyDescriptor(
+              window.HTMLInputElement.prototype, 'value');
+            desc.set.call(el, sk);
+            el.dispatchEvent(new Event('input', {bubbles: true}));
+            el.dispatchEvent(new Event('change', {bubbles: true}));
+          } else if (tries > 3) {
+            clearInterval(timer);   // 稳定保持住了，停止
+          }
+        }, 100);
+      }
+    }, 60);
     // 插到输入框外层容器之后（紧跟输入框，视觉上属于表单）
     var host = inp.closest('form') || inp.parentElement;
     while (host && host.parentElement && host.tagName !== 'BODY') {
@@ -363,11 +447,114 @@ def patch_login_hint():
     return true;
   }
 
+  /* 登录成功后把密钥存下来（勾了「记住密码」才存） */
+  function persistOnSuccess(key){
+    var cbR = document.getElementById('c2a-remember');
+    var cbA = document.getElementById('c2a-auto');
+    if (cbR && cbR.checked && key) {
+      lsSet(RK, key);
+      lsSet(RT, String(Date.now()));
+      lsSet(RA, (cbA && cbA.checked) ? '1' : '0');
+    } else if (cbR && !cbR.checked) {
+      lsDel(RK); lsDel(RT); lsDel(RA);
+    }
+  }
+
+  /* 勾了「自动登录」时，启动后静默校验一次 */
+  function tryAutoLogin(){
+    if (ls(RA) !== '1') return;
+    var key = savedKey();
+    if (!key) { lsDel(RA); return; }
+    // 已经在控制台页面就不用管（登录页才会走到这里）
+    fetch('/auth/login', {
+      method: 'POST',
+      headers: {'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}
+    }).then(function(r){
+      if (r.ok) {
+        // 把密钥写回面板的 IndexedDB，然后跳转
+        return mirrorToIdb(key).then(function(){
+          location.replace('/accounts');
+        });
+      }
+      // 失效：清掉，留在登录页
+      lsDel(RK); lsDel(RT); lsDel(RA);
+    }).catch(function(){});
+  }
+
+  /* 把密钥写进面板用的 IndexedDB（它读这里判断登录态） */
+  function mirrorToIdb(key){
+    return new Promise(function(res){
+      try {
+        var req = indexedDB.open('chatgpt2api');
+        req.onupgradeneeded = function(){
+          try { req.result.createObjectStore('auth'); } catch(e){}
+        };
+        req.onerror = function(){ res(false); };
+        req.onsuccess = function(){
+          var db = req.result;
+          try {
+            if (!db.objectStoreNames.contains('auth')) { db.close(); return res(false); }
+            var tx = db.transaction('auth', 'readwrite');
+            tx.objectStore('auth').put(
+              {key: key, role: 'admin', subjectId: 'admin', name: '管理员'},
+              'chatgpt2api_auth_key');
+            tx.oncomplete = function(){ db.close(); res(true); };
+            tx.onerror = function(){ db.close(); res(false); };
+          } catch(e) { try{db.close();}catch(e2){} res(false); }
+        };
+      } catch(e) { res(false); }
+    });
+  }
+
+  /* 监听登录成功：面板会跳到 /accounts，这里兼听输入框回车和按钮点击 */
+  function hookLogin(){
+    var inp = document.getElementById('auth-key');
+    if (!inp) return;
+
+    /* 关键：登录成功后前端会立刻跳转（router.replace），
+       页面一换，setTimeout/轮询全被销毁，所以「记住密码」必须在
+       跳转前同步写入。
+
+       注意：面板用的是 axios（底层 XMLHttpRequest），不是 fetch，
+       所以必须拦 XMLHttpRequest，拦 fetch 是无效的。 */
+  }
+
+  function hookXhr(){
+    if (window.__c2aXhrHooked) return;
+    window.__c2aXhrHooked = 1;
+    var _open = XMLHttpRequest.prototype.open;
+    XMLHttpRequest.prototype.open = function(method, url){
+      try { this.__c2aUrl = String(url || ''); } catch(e){}
+      return _open.apply(this, arguments);
+    };
+    var _send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.send = function(){
+      var xhr = this;
+      try {
+        if (xhr.__c2aUrl && xhr.__c2aUrl.indexOf('/auth/login') > -1) {
+          xhr.addEventListener('load', function(){
+            if (xhr.status >= 200 && xhr.status < 300) {
+              var el = document.getElementById('auth-key');
+              var v = el && el.value ? el.value : '';
+              if (v) persistOnSuccess(v);   // 同步写 localStorage，赶在跳转前
+            }
+          });
+        }
+      } catch(e){}
+      return _send.apply(this, arguments);
+    };
+  }
+
   function start(){
-    if (inject()) return;
+    if (inject()) { hookLogin(); hookXhr(); tryAutoLogin(); return; }
     // React 还没渲染完，观察 DOM
     var mo = new MutationObserver(function(){
-      if (inject()) { mo.disconnect(); }
+      if (inject()) {
+        mo.disconnect();
+        hookLogin();
+        hookXhr();
+        tryAutoLogin();
+      }
     });
     mo.observe(document.documentElement, {childList: true, subtree: true});
     // 15 秒后放弃（不是登录页就不折腾了）

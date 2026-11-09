@@ -14,6 +14,8 @@
 import json
 import os
 import re
+import select
+import socket
 import threading
 import time
 import uuid
@@ -21,6 +23,11 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+# noVNC 静态资源目录（容器内），用于 /vnc/* 同源代理
+NOVNC_ROOT = "/usr/share/novnc"
+NOVNC_HOST = "127.0.0.1"
+NOVNC_PORT = 6080
 
 from jsx_clean import strip_jsx
 try:
@@ -44,7 +51,7 @@ NAVBAR = r"""
   window.__c2aNav = 1;
 
   var HOST = (location.hostname && location.hostname !== '') ? location.hostname : '127.0.0.1';
-  var VNC_URL = 'http://' + HOST + ':6080/vnc.html?autoconnect=1&resize=scale&reconnect=1';
+  var VNC_URL = '/vnc/vnc.html?autoconnect=1&resize=scale&reconnect=1&path=websockify';
 
   function styleOnce(){
     if (document.getElementById('c2a-css')) return;
@@ -229,7 +236,7 @@ NAVBAR = r"""
       if (typeof u === 'string' && AUTH_RE.test(u)){
         return window.__c2aOpenAuth(u);
       }
-      if (typeof u === 'string' && u.indexOf(':6080') > -1){
+      if (typeof u === 'string' && (u.indexOf(':6080') > -1 || u.indexOf('/vnc/') > -1)){
         openBrowser('');
         return {closed:false, focus:function(){}, blur:function(){},
                 close:function(){}, postMessage:function(){}, location:{href:u}};
@@ -288,6 +295,110 @@ NAVBAR = r"""
   try{
     var mo = new MutationObserver(function(){ if (fillOauthBox()) watchOauth(); });
     mo.observe(document.documentElement, {childList: true, subtree: true});
+  }catch(e){}
+
+  // ---------- 设置页：修改登录密码 ----------
+  // 面板把密码放在环境变量里，UI 改不了。这里加一个表单，
+  // 调 /p/api/auth/password 写入 auth-override.json，网关鉴权会优先认它，立即生效。
+  var pwdInjected = false;
+  function injectPwdPanel(){
+    if (pwdInjected) return;
+    if (location.pathname.indexOf('/settings') !== 0) return;
+    // 必须挂到 body 末尾，不能挂进 <main>：
+    // <main> 归 React 管，插入子节点会触发 hydration 报错（#418）并被清除。
+    var host = document.body;
+    if (!host) return;
+    if (document.getElementById('c2a-pwd-card')) { pwdInjected = true; return; }
+
+    var card = document.createElement('div');
+    card.id = 'c2a-pwd-card';
+    card.style.cssText = 'position:fixed;right:24px;bottom:24px;z-index:2147482000;'
+      + 'width:380px;max-width:calc(100vw - 32px);border-radius:16px;'
+      + 'border:1px solid #e7e5e4;background:#fff;padding:20px;font-family:inherit;'
+      + 'box-shadow:0 20px 60px -12px rgba(0,0,0,.25)';
+    // 可折叠：默认展开，点标题收起
+    card.setAttribute('data-open', '1');
+    card.innerHTML = ''
+      + '<div style="font-size:15px;font-weight:650;color:#1c1917;margin-bottom:4px">修改登录密码</div>'
+      + '<div style="font-size:12.5px;color:#78716c;line-height:1.7;margin-bottom:14px">'
+      + '改完立即生效，不需要重启容器。新密码至少 8 位，需同时包含字母和数字。'
+      + '<br>注意：这是登录控制台的密码，不是给 AI 客户端用的 <code style="background:#f5f5f4;'
+      + 'padding:1px 5px;border-radius:4px">sk-</code> 开头的 API Key。</div>'
+      + '<div style="display:flex;flex-direction:column;gap:10px;max-width:420px">'
+      + '<input id="c2a-pwd-cur" type="password" placeholder="当前密码" autocomplete="current-password" '
+      + 'style="height:40px;border:1px solid #d6d3d1;border-radius:10px;padding:0 12px;font-size:13px">'
+      + '<input id="c2a-pwd-new" type="password" placeholder="新密码（≥8 位，含字母和数字）" '
+      + 'autocomplete="new-password" style="height:40px;border:1px solid #d6d3d1;border-radius:10px;'
+      + 'padding:0 12px;font-size:13px">'
+      + '<input id="c2a-pwd-new2" type="password" placeholder="再次输入新密码" '
+      + 'autocomplete="new-password" style="height:40px;border:1px solid #d6d3d1;border-radius:10px;'
+      + 'padding:0 12px;font-size:13px">'
+      + '<div id="c2a-pwd-msg" style="font-size:12.5px;min-height:18px"></div>'
+      + '<div style="display:flex;gap:10px">'
+      + '<button id="c2a-pwd-save" style="height:40px;padding:0 18px;border:0;border-radius:10px;'
+      + 'background:#1c1917;color:#fff;font-size:13px;cursor:pointer">保存新密码</button>'
+      + '<button id="c2a-pwd-reset" style="height:40px;padding:0 16px;border:1px solid #e7e5e4;'
+      + 'border-radius:10px;background:#fff;color:#78716c;font-size:13px;cursor:pointer">'
+      + '恢复环境变量密码</button>'
+      + '</div></div>';
+
+    host.appendChild(card);
+
+    var msg = card.querySelector('#c2a-pwd-msg');
+    function say(t, ok){
+      msg.textContent = t;
+      msg.style.color = ok ? '#16a34a' : '#dc2626';
+    }
+
+    card.querySelector('#c2a-pwd-save').onclick = function(){
+      var cur = card.querySelector('#c2a-pwd-cur').value;
+      var n1 = card.querySelector('#c2a-pwd-new').value;
+      var n2 = card.querySelector('#c2a-pwd-new2').value;
+      if (!cur || !n1) { say('请填写完整'); return; }
+      if (n1 !== n2) { say('两次输入的新密码不一致'); return; }
+      say('提交中…', true);
+      fetch('/p/api/auth/password', {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({current: cur, new: n1})})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d && d.ok) {
+            say('✅ 密码已更新，请用新密码重新登录（3 秒后跳转）', true);
+            // 清掉记住的旧密码，避免自动登录用旧密码反复失败
+            try {
+              localStorage.removeItem('c2a_remember_key');
+              localStorage.removeItem('c2a_remember_at');
+              localStorage.removeItem('c2a_auto_login');
+            } catch(e){}
+            // 给足时间让用户看到结果，再跳转
+            setTimeout(function(){ location.href = '/login'; }, 3000);
+          } else {
+            say((d && d.error) || '修改失败');
+          }
+        })
+        .catch(function(e){ say('请求失败: ' + e.message); });
+    };
+
+    card.querySelector('#c2a-pwd-reset').onclick = function(){
+      if (!confirm('恢复为 .env / 环境变量里的密码？当前设置的新密码将失效。')) return;
+      fetch('/p/api/auth/password/reset', {method:'POST',
+        headers:{'Content-Type':'application/json'}, body:'{}'})
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+          if (d && d.ok) say('✅ 已恢复环境变量密码，请重新登录', true);
+          else say((d && d.error) || '恢复失败');
+        })
+        .catch(function(e){ say('请求失败: ' + e.message); });
+    };
+
+    pwdInjected = true;
+  }
+  try{
+    var mo2 = new MutationObserver(function(){ injectPwdPanel(); });
+    mo2.observe(document.documentElement, {childList: true, subtree: true});
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', injectPwdPanel);
+    } else { injectPwdPanel(); }
   }catch(e){}
 
   // ---------- 复用面板登录态 ----------
@@ -1010,6 +1121,163 @@ class Handler(BaseHTTPRequestHandler):
 
     _raw_mode = False
 
+    # ================================================================
+    # 同源 noVNC 反向代理  /vnc/*
+    #
+    # 为什么需要：前端原来把内置浏览器地址硬编码成 http://<host>:6080/vnc.html。
+    # 三个问题叠加导致黑屏：
+    #   1. 面板走 HTTPS/反代时，iframe 指向 http://...:6080 是混合内容，被浏览器直接拦掉
+    #   2. 6080 通常没有对外映射，即使 http 也连不上
+    #   3. 容器内 Chromium 的 loopback 也走代理，容器内访问 127.0.0.1:xxxx 不一定通
+    # 改成同源相对路径 /vnc/* 后：自动继承页面协议、不需要额外开端口、不受混合内容限制。
+    #
+    # 关键：WebSocket 与静态资源必须分开处理（详见 _proxy_to_novnc 注释）。
+    # ================================================================
+    def _proxy_to_novnc(self, path):
+        """把 /vnc/* 转发到容器内 6080 的 noVNC。"""
+        # ---------- WebSocket：裸字节中继 ----------
+        if path == "/vnc/websockify":
+            try:
+                up = socket.create_connection((NOVNC_HOST, NOVNC_PORT), timeout=15)
+            except Exception:
+                self._json(502, {"error": "noVNC 未就绪（6080 连不上）"})
+                return
+            try:
+                lines = ["%s /websockify HTTP/1.1" % self.command]
+                for k, v in self.headers.items():
+                    lk = k.lower()
+                    if lk in ("connection", "keep-alive", "transfer-encoding",
+                              "host", "upgrade"):
+                        continue
+                    lines.append("%s: %s" % (k, v))
+                lines.append("Host: %s:%d" % (NOVNC_HOST, NOVNC_PORT))
+                lines.append("Connection: Upgrade")
+                if self.headers.get("Upgrade"):
+                    lines.append("Upgrade: " + self.headers.get("Upgrade"))
+                up.sendall(("\r\n".join(lines) + "\r\n\r\n").encode())
+
+                up.settimeout(30)
+                first = up.recv(65536)
+                if not first:
+                    self.close_connection = True
+                    return
+                self.wfile.write(first)
+                self.wfile.flush()
+
+                client_sock = self.connection
+                client_sock.setblocking(False)
+                up.setblocking(False)
+                idle = 0
+                while True:
+                    try:
+                        r, _, _ = select.select([client_sock, up], [], [], 5)
+                    except Exception:
+                        break
+                    if not r:
+                        idle += 5
+                        if idle >= 300:
+                            break
+                        continue
+                    idle = 0
+                    if client_sock in r:
+                        data = client_sock.recv(65536)
+                        if not data:
+                            break
+                        up.sendall(data)
+                    if up in r:
+                        data = up.recv(65536)
+                        if not data:
+                            break
+                        client_sock.sendall(data)
+            except Exception:
+                pass
+            finally:
+                try:
+                    up.close()
+                except Exception:
+                    pass
+                self.close_connection = True
+            return
+
+        # ---------- 静态资源：按文件直读，不用裸字节中继 ----------
+        # 注意：绝不能和 WebSocket 共用裸字节中继 —— 连接关闭时机不可控，
+        # 浏览器会报 net::ERR_ABORTED Script，noVNC 的 ES module 加载失败，
+        # 页面停在白/黑屏。
+        sub = path[len("/vnc"):] or "/"
+        if not sub.startswith("/"):
+            sub = "/" + sub
+        # 目录访问给 index
+        if sub.endswith("/"):
+            sub += "vnc.html"
+
+        # 防目录穿越
+        safe = os.path.normpath(sub).lstrip("/")
+        if safe.startswith(".."):
+            self._json(400, {"error": "bad path"})
+            return
+
+        cand = os.path.join(NOVNC_ROOT, safe)
+        if not os.path.isfile(cand):
+            # 有些部署 noVNC 在 /usr/share/novnc/ 之外，兜底走 HTTP 转发
+            try:
+                op2 = urllib.request.build_opener(
+                    urllib.request.ProxyHandler({}))
+                req = urllib.request.Request(
+                    "http://%s:%d%s" % (NOVNC_HOST, NOVNC_PORT, sub))
+                with op2.open(req, timeout=20) as r:
+                    body = r.read()
+                    self.send_response(r.status)
+                    self.send_header("Content-Type",
+                                     r.headers.get("Content-Type") or
+                                     "application/octet-stream")
+                    self.send_header("Content-Length", str(len(body)))
+                    self.send_header("Cache-Control", "no-cache")
+                    self.end_headers()
+                    if self.command != "HEAD":
+                        self.wfile.write(body)
+                return
+            except Exception as e:
+                self._json(404, {"error": "noVNC 资源不存在: %s" % safe,
+                                 "detail": str(e)[:120]})
+                return
+
+        # 按扩展名给 Content-Type
+        ext = os.path.splitext(cand)[1].lower()
+        ctype = {
+            ".html": "text/html; charset=utf-8",
+            ".js": "text/javascript; charset=utf-8",
+            ".mjs": "text/javascript; charset=utf-8",
+            ".css": "text/css; charset=utf-8",
+            ".json": "application/json; charset=utf-8",
+            ".png": "image/png",
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".svg": "image/svg+xml",
+            ".ico": "image/x-icon",
+            ".woff": "font/woff",
+            ".woff2": "font/woff2",
+            ".ttf": "font/ttf",
+            ".map": "application/json; charset=utf-8",
+        }.get(ext, "application/octet-stream")
+
+        try:
+            with open(cand, "rb") as f:
+                body = f.read()
+        except Exception as e:
+            self._json(500, {"error": "读取 noVNC 资源失败", "detail": str(e)[:120]})
+            return
+
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        if self.command != "HEAD":
+            try:
+                self.wfile.write(body)
+            except Exception:
+                pass
+
     def _proxy_to_panel(self):
         """把请求原样转发给容器内的 chatgpt2api 面板（3001）
 
@@ -1029,9 +1297,43 @@ class Handler(BaseHTTPRequestHandler):
             skip = {"host", "connection", "keep-alive", "transfer-encoding",
                     "proxy-authenticate", "proxy-authorization", "te",
                     "trailers", "upgrade", "content-length"}
+
+            # 密码翻译层：
+            #   面板只认环境变量里的原始密码（UPSTREAM_KEY），
+            #   但用户在设置页改过密码后，客户端带的是新密码（override）。
+            #   这里把「新密码」换成面板真实密钥再转发，同时让「旧密码」彻底失效。
+            try:
+                _ov = webapi.auth_override_key()
+            except Exception:
+                _ov = ""
+            _auth_in = (self.headers.get("Authorization") or "").strip()
+            _xkey_in = (self.headers.get("x-api-key") or "").strip()
+            _reject = False
+            if _ov:
+                if _auth_in == "Bearer " + _ov:
+                    _auth_in = "Bearer " + UPSTREAM_KEY
+                elif _auth_in == "Bearer " + UPSTREAM_KEY:
+                    _reject = True
+                if _xkey_in == _ov:
+                    _xkey_in = UPSTREAM_KEY
+                elif _xkey_in == UPSTREAM_KEY:
+                    _reject = True
+            if _reject:
+                # 旧密码已作废，别把它转给面板（否则面板会放行）
+                self._json(401, {"error": {"message": "密钥无效或已失效，请重新登录",
+                                           "type": "authentication_error",
+                                           "code": "invalid_api_key"}})
+                return
+
             for k, v in self.headers.items():
-                if k.lower() not in skip:
-                    req.add_header(k, v)
+                lk = k.lower()
+                if lk in skip:
+                    continue
+                if lk == "authorization":
+                    v = _auth_in or v
+                elif lk == "x-api-key":
+                    v = _xkey_in or v
+                req.add_header(k, v)
 
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             hdrs = None
@@ -1166,14 +1468,30 @@ class Handler(BaseHTTPRequestHandler):
             return False
 
     def _auth_ok(self):
-        """校验 Key。接受两类：
+        """校验 Key。接受三类：
 
-          1. 登录口令（config.ini 的 auth_key）—— 管理面板用
-          2. 设置页生成的 API Key（/api/auth/users）—— 第三方应用用
+          1. 登录口令（config.ini / 环境变量）—— 管理面板用
+          2. 用户在设置页改过的新密码（auth-override.json）—— 立即生效
+          3. 设置页生成的 API Key（/api/auth/users）—— 第三方应用用
         未配置任何 Key 时放行。
         """
-        expect = UPSTREAM_KEY
         got = self._client_key()
+
+        # 用户在设置页改过密码 → 只有新密码有效，环境变量里的旧密码立即作废。
+        # （必须放在最前面判断，否则旧密码会一直被放行）
+        try:
+            ov = webapi.auth_override_key()
+        except Exception:
+            ov = ""
+        if ov:
+            if got == ov:
+                return True
+            # sk- 开头的 API Key 仍然有效（第三方客户端用）
+            if got.startswith("sk-"):
+                return self._panel_key_valid(got)
+            return False
+
+        expect = UPSTREAM_KEY
         if not expect:
             return True
         if got == expect:
@@ -1323,8 +1641,9 @@ class Handler(BaseHTTPRequestHandler):
                 _op = urllib.request.build_opener(
                     urllib.request.ProxyHandler({}))
                 req = urllib.request.Request(PANEL + "/v1/models")
-                req.add_header("Authorization",
-                               "Bearer " + (self._client_key() or UPSTREAM_KEY))
+                # 注意：这里必须用面板的真实密钥，不能透传客户端提供的密码。
+                # 用户改过密码后，客户端带的是新密码，面板不认 → 会 502。
+                req.add_header("Authorization", "Bearer " + UPSTREAM_KEY)
                 raw = _op.open(req, timeout=60).read()
                 try:
                     data = json.loads(raw)
@@ -1354,17 +1673,36 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/health":
-            self._json(200, {"status": "ok"})
+            # 带上依赖状态，方便编排层/监控判断是否真的就绪
+            mihomo_ok = False
+            try:
+                op_h = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                op_h.open("http://127.0.0.1:9090/version", timeout=3).read()
+                mihomo_ok = True
+            except Exception:
+                pass
+            novnc_ok = os.path.isfile(os.path.join(NOVNC_ROOT, "vnc.html"))
+            node_cnt = 0
+            try:
+                node_cnt = len(webapi.proxy_nodes()) if webapi else 0
+            except Exception:
+                pass
+            self._json(200, {"status": "ok", "mihomo": mihomo_ok,
+                             "novnc": novnc_ok, "nodes": node_cnt,
+                             "version": getattr(webui, "APP_VERSION", "")})
             return
 
-        # 常见误访问：/vnc（内置浏览器其实在 6080 上单独跑 noVNC）
-        if path in ("/vnc", "/vnc/vnc.html", "/novnc"):
-            host = (self.headers.get("Host") or "127.0.0.1:3000").split(":")[0]
+        # 同源 noVNC 代理：/vnc/* 直接转发到容器内 6080，
+        # 自动继承页面协议（http/https），不用额外开端口、不受混合内容限制。
+        if path == "/vnc" or path == "/novnc":
             self.send_response(302)
-            self.send_header("Location",
-                             "http://%s:6080/vnc.html?autoconnect=1&resize=remote" % host)
+            self.send_header(
+                "Location", "/vnc/vnc.html?autoconnect=1&resize=remote&path=websockify")
             self.send_header("Content-Length", "0")
             self.end_headers()
+            return
+        if path == "/vnc/websockify" or path.startswith("/vnc/"):
+            self._proxy_to_novnc(self.path.split("?")[0].rstrip("/") or "/")
             return
 
         # 常见误访问：/login 等，统一回到控制台
@@ -1406,6 +1744,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if path == "/p/api/models/off":
                 self._json(200, webapi.get_model_off())
+                return
+            if path == "/p/api/onboarding":
+                self._json(200, webapi.get_onboarding())
+                return
+            if path == "/p/api/auth/password":
+                self._json(200, {"changed": bool(webapi.auth_override_key())})
                 return
             if path == "/p/api/proxy":
                 try:
@@ -1490,6 +1834,19 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/p/api/models/off":
                 self._json(200, webapi.set_model_off(body.get("models") or []))
+                return
+
+            if path == "/p/api/onboarding":
+                self._json(200, webapi.set_onboarding(bool(body.get("done", True))))
+                return
+
+            # 设置页改登录密码（立即生效，不用重建容器）
+            if path == "/p/api/auth/password":
+                self._json(200, webapi.change_auth_password(
+                    body.get("current") or "", body.get("new") or ""))
+                return
+            if path == "/p/api/auth/password/reset":
+                self._json(200, webapi.reset_auth_password())
                 return
 
             if path == "/p/api/proxy/remove-node":
