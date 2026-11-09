@@ -551,6 +551,118 @@ TIMEOUT = CFG["timeout"]
 RETRIES = CFG["retries"]
 DEFAULT_MODEL = CFG["default_model"]
 
+
+# ---------------------------------------------------------------- 图片地址改写
+# 面板生成图片时，URL 是由 resolve_image_base_url() 用 request.headers['host']
+# 拼出来的。请求经网关转发到 127.0.0.1:3001 时，host 就是 127.0.0.1:3001，
+# 于是面板返回的是**容器内部地址**，宿主机没映射 3001，浏览器打不开。
+#
+# 之前的实现只在 /v1/images/generations 里做前缀匹配改写，覆盖不到：
+#   · /v1/images/edits（图生图）
+#   · /api/images（图片管理页）
+#   · /api/logs（日志详情里的图片）
+# 而且前缀匹配漏掉了历史数据里的 https://127.0.0.1:3001。
+#
+# 现在统一收口成下面这组函数，所有涉及图片的响应都走它。
+_LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "0.0.0.0", "::1", "[::1]")
+
+
+def _public_base(headers):
+    """从请求头推出对外可访问的 base（如 https://nas.example.com）。"""
+    host = (headers.get("Host") or "").strip()
+    if not host:
+        return ""
+    scheme = "https" if (headers.get("X-Forwarded-Proto") or "").lower() == "https" else "http"
+    return scheme + "://" + host
+
+
+def _rewrite_one_url(u, base):
+    """把一条图片地址从容器内部换成对外地址。
+
+    用 URL 结构解析而不是字符串前缀匹配，这样：
+      · http:// 和 https:// 都能覆盖（历史日志里有 https 的旧记录）
+      · 端口是 3001 / 3000 / 随便什么都能覆盖
+      · 已是对外地址的（如 CDN 直链）原样保留
+    """
+    if not isinstance(u, str) or not base:
+        return u, False
+    s = u.strip()
+    if not s:
+        return u, False
+    try:
+        pr = urllib.parse.urlsplit(s)
+    except Exception:
+        return u, False
+    host = (pr.hostname or "").lower()
+    if host not in _LOOPBACK_HOSTS:
+        return u, False
+    # 只改图片相关路径，避免误伤 /login 之类的内部链接。
+    # 注意缩略图走的是 /image-thumbnails/...，不是 /images，
+    # 漏掉它会导致图片管理页缩略图仍然打不开。
+    path = pr.path or "/"
+    if not (path.startswith("/images")
+            or path.startswith("/image-thumbnails")):
+        return u, False
+    out = base + path
+    if pr.query:
+        out += "?" + pr.query
+    return out, True
+
+
+def rewrite_image_urls(node, base, depth=0):
+    """递归改写响应里所有图片地址（原地修改），返回改了几处。
+
+    不按接口硬编码结构，而是递归遍历：不管外面套了几层
+    （data[] / items[] / groups[].items[] / detail.urls[]），都能覆盖到。
+    """
+    if not base or depth > 10:
+        return 0
+    changed = 0
+    if isinstance(node, dict):
+        for k, v in list(node.items()):
+            if k in ("url", "thumbnail_url", "image_url", "src") and isinstance(v, str):
+                nv, hit = _rewrite_one_url(v, base)
+                if hit:
+                    node[k] = nv
+                    changed += 1
+            elif k in ("urls", "images", "image_urls") and isinstance(v, list):
+                for i, x in enumerate(v):
+                    if isinstance(x, str):
+                        nv, hit = _rewrite_one_url(x, base)
+                        if hit:
+                            v[i] = nv
+                            changed += 1
+                    elif isinstance(x, (dict, list)):
+                        changed += rewrite_image_urls(x, base, depth + 1)
+            elif isinstance(v, (dict, list)):
+                changed += rewrite_image_urls(v, base, depth + 1)
+    elif isinstance(node, list):
+        for i, it in enumerate(node):
+            if isinstance(it, str):
+                nv, hit = _rewrite_one_url(it, base)
+                if hit:
+                    node[i] = nv
+                    changed += 1
+            elif isinstance(it, (dict, list)):
+                changed += rewrite_image_urls(it, base, depth + 1)
+    return changed
+
+
+def rewrite_image_urls_in_bytes(raw, headers):
+    """给一段 JSON 响应做改写。命中返回 (新字节, True)，否则原样返回。"""
+    try:
+        obj = json.loads(raw.decode("utf-8", "replace"))
+    except Exception:
+        return raw, False
+    base = _public_base(headers)
+    if not base or not isinstance(obj, (dict, list)):
+        return raw, False
+    n = rewrite_image_urls(obj, base)
+    if not n:
+        return raw, False
+    return json.dumps(obj, ensure_ascii=False).encode(), True
+
+
 # ---------------------------------------------------------------- 工具协议
 # chatgpt2api 的 /v1/messages 用 XML 协议描述工具，这里改写成更明确的形式
 TOOL_RULES = """You are a tool-calling engine attached to an API. You do not chat idly.
@@ -1371,6 +1483,19 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     pass
 
+            # 图片地址统一改写：把面板返回的容器内部地址（127.0.0.1:3001 等）
+            # 换成对外的 Host，否则浏览器打不开 —— 表现为「页面只显示一串路径」。
+            # 覆盖 /v1/images/edits（图生图）、/api/images（图片管理页）、
+            # /api/logs（日志详情里的图片）等所有经此转发的 JSON 接口。
+            if status == 200 and "application/json" in (ctype or ""):
+                try:
+                    new_data, hit = rewrite_image_urls_in_bytes(data, self.headers)
+                    if hit:
+                        data = new_data
+                        ctype = "application/json; charset=utf-8"
+                except Exception:
+                    pass
+
             self.send_response(status)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
@@ -2077,23 +2202,13 @@ class Handler(BaseHTTPRequestHandler):
 
         data = call_upstream_raw("/v1/images/generations", payload)
         # 上游返回的图片 URL 指向容器内部地址（127.0.0.1:3001），
-        # 宿主机没映射该端口，客户端根本打不开 —— 这里改写成对外网关地址
-        # （同一个 3100 端口，网关会把 /images/* 转发给面板）。
+        # 宿主机没映射该端口，客户端根本打不开 —— 统一改写成对外地址。
+        # 用公共函数而不是前缀匹配：http/https、任意端口都能覆盖，
+        # 历史数据里的 https://127.0.0.1:3001 也不会漏。
         try:
-            if isinstance(data, dict) and data.get("data"):
-                host = (self.headers.get("Host") or "").strip()
-                if host and not host.startswith("127.0.0.1:3000"):
-                    scheme = "https" if self.headers.get("X-Forwarded-Proto") == "https" else "http"
-                    base = scheme + "://" + host
-                    for it in data["data"]:
-                        u = it.get("url")
-                        if isinstance(u, str):
-                            for pat in ("http://127.0.0.1:3001",
-                                        "http://localhost:3001",
-                                        "http://127.0.0.1:3000"):
-                                if u.startswith(pat):
-                                    it["url"] = base + u[len(pat):]
-                                    break
+            base = _public_base(self.headers)
+            if base:
+                rewrite_image_urls(data, base)
         except Exception:
             pass
         self._json(200, data)
