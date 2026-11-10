@@ -201,10 +201,27 @@ _TEMPLATE = r"""<script>
   function check(manual){
     if (!modal) return;
     if (manual) setMsg('正在检查…');
+
+    // 兜底超时：网络不通时后端可能要等几十秒，不能让面板永远停在「检查中…」
+    var done = false;
+    var timer = setTimeout(function(){
+      if (done) return;
+      done = true;
+      var cell = modal && modal.querySelector('#c2a-up-latest');
+      if (cell) cell.innerHTML = '最新版本：<b>检查超时</b>';
+      var nb = modal && modal.querySelector('#c2a-up-notes');
+      if (nb) nb.textContent =
+        '无法连接更新服务器（可能需要代理）。你的项目本身不受影响，'
+        + '可以稍后点「重新检查」，或手动执行 git pull 更新。';
+      setMsg('检查超时：网络不通', 'bad');
+    }, 12000);
+
     // 优先走后端（后端能拿到更完整的信息，并且知道能不能就地更新）
     fetch('/p/api/update/info', {cache: 'no-store'})
       .then(function(r){ return r.json(); })
       .then(function(d){
+        if (done) return;
+        done = true; clearTimeout(timer);
         if (d && (d.latest || d.current)){
           render(d);
           if (manual) setMsg('');
@@ -213,6 +230,8 @@ _TEMPLATE = r"""<script>
         throw new Error('bad response');
       })
       .catch(function(){
+        if (done) return;
+        done = true; clearTimeout(timer);
         // 后端不可用时退回直接读仓库文件
         Promise.all([
           fetch(RAW_VER, {cache: 'no-store'}).then(function(r){

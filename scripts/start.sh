@@ -32,20 +32,53 @@ else
 fi
 
 # ---------- 恢复「页内更新」过的代码 ----------
-# 用户点「立即更新」后，新代码会落到 /app/data/code/（持久化卷）。
-# 容器每次启动都要把它覆盖回 /opt/gateway/，否则一重建就退回镜像自带的旧版本。
+# 用户点「立即更新」后，新代码会落到 /app/data/code/（持久化卷），
+# 容器每次启动要把它覆盖回 /opt/gateway/，否则一重建就退回镜像自带的版本。
+#
+# 但这里有个必须避免的坑：
+#   如果不管版本号无脑覆盖，那么用户执行 `docker compose up -d --build`
+#   升级镜像后，启动时又被 data/code 里的**旧代码**盖回去 ——
+#   表现为「镜像更新了，但版本号不变、功能也没变」。
+#
+# 正确做法：比较两边 VERSION，只有 data/code **比镜像新**时才覆盖；
+# 镜像更新（版本更高或相同）时以镜像为准，并清掉 data/code 里的旧副本。
+IMG_VER=$(cat /app/VERSION 2>/dev/null | tr -d '[:space:]')
 if [ -d /app/data/code ]; then
-  n=0
-  for f in /app/data/code/*.py; do
-    [ -f "$f" ] || continue
-    cp -f "$f" /opt/gateway/ 2>/dev/null && n=$((n+1))
-  done
-  if [ "$n" -gt 0 ]; then
-    echo "[start] 已应用页内更新（$n 个文件）"
-    if [ -f /app/data/code/VERSION ]; then
-      cp -f /app/data/code/VERSION /app/VERSION 2>/dev/null || true
-      echo "[start] 版本: $(cat /app/VERSION 2>/dev/null)"
-    fi
+  CODE_VER=$(cat /app/data/code/VERSION 2>/dev/null | tr -d '[:space:]')
+
+  # ver_gt A B：A 严格大于 B 时返回 0（真）
+  ver_gt() {
+    python - "$1" "$2" <<'PYVER'
+import sys
+def parts(v):
+    out = []
+    for x in str(v or "").split("."):
+        d = "".join(ch for ch in x if ch.isdigit())
+        out.append(int(d) if d else 0)
+    return out
+a, b = parts(sys.argv[1]), parts(sys.argv[2])
+for i in range(max(len(a), len(b))):
+    x = a[i] if i < len(a) else 0
+    y = b[i] if i < len(b) else 0
+    if x > y: sys.exit(0)
+    if x < y: sys.exit(1)
+sys.exit(1)
+PYVER
+  }
+
+  if [ -n "$CODE_VER" ] && ver_gt "$CODE_VER" "$IMG_VER"; then
+    n=0
+    for f in /app/data/code/*.py; do
+      [ -f "$f" ] || continue
+      cp -f "$f" /opt/gateway/ 2>/dev/null && n=$((n+1))
+    done
+    echo "[start] 已应用页内更新（$n 个文件，$CODE_VER > $IMG_VER）"
+    cp -f /app/data/code/VERSION /app/VERSION 2>/dev/null || true
+  else
+    # 镜像版本 >= data/code 版本：以镜像为准，清掉过期副本，
+    # 否则下次启动还会把它当成「更新」用。
+    echo "[start] 镜像版本 $IMG_VER >= 页内更新 $CODE_VER，以镜像为准"
+    rm -rf /app/data/code
   fi
 fi
 

@@ -582,6 +582,9 @@ NAVBAR = r"""
       + 'font-family:inherit;white-space:nowrap;transition:.15s}'
       + '.c2a-kv-btn:hover{background:#f5f5f4;color:#1c1917}'
       + '.c2a-kv-btn.ok{background:#dcfce7;border-color:#86efac;color:#15803d}'
+      + '.c2a-kv-primary{background:#1c1917 !important;color:#fff !important;'
+      + 'border-color:#1c1917 !important}'
+      + '.c2a-kv-primary:hover{background:#292524 !important}'
       + '.c2a-kv-warn{font-size:11.5px;color:#b45309;background:#fffbeb;'
       + 'border:1px solid #fde68a;border-radius:8px;padding:5px 9px}'
       + '.dark .c2a-kv-line{background:#12100e;border-color:rgba(245,245,244,.08)}'
@@ -721,16 +724,30 @@ NAVBAR = r"""
     var stale = row.querySelector('.c2a-kv-line');
     if (stale) stale.remove();
     var name = kvName(row);
+    // 反查这条密钥的 id：面板行里没有 data-id，只能按名字在接口数据里找；
+    // 找到了就记下来，后面按 id 精确匹配明文 / 重新生成。
+    var rowId = '';
+    if (info && info.list){
+      var byName = info.list.filter(function(it){ return (it.name || '') === name; });
+      if (byName.length === 1) rowId = byName[0].id || '';
+    }
     row.setAttribute(KEY_ATTR, '1');
+    if (rowId) row.setAttribute('data-c2a-keyid', rowId);
     kvCss();
 
     var plain = '';
     var recoverable = false;
     if (info){
-      // 按名字匹配（面板列表与档案都按名字对应；同名的取第一个未用的）
-      var hit = (info.list || []).find(function(it){
-        return (it.name || '') === name && it.plain_key;
-      });
+      // 优先按 id 匹配（唯一、不会错）；id 取不到时才退回按名字匹配。
+      // 只按名字匹配的隐患：用户可能建了两把同名密钥，会张冠李戴。
+      var list = info.list || [];
+      var hit = null;
+      if (rowId){
+        hit = list.find(function(it){ return it.id === rowId && it.plain_key; });
+      }
+      if (!hit && name){
+        hit = list.find(function(it){ return (it.name || '') === name && it.plain_key; });
+      }
       if (hit){ plain = hit.plain_key; recoverable = true; }
     }
 
@@ -764,25 +781,31 @@ NAVBAR = r"""
       };
     } else {
       line.innerHTML = ''
-        + '<span class="c2a-kv-warn">明文不可恢复（本功能上线前创建，面板只存了哈希）</span>'
-        + '<button type="button" class="c2a-kv-btn">重新生成</button>';
+        + '<span class="c2a-kv-warn">'
+        +   '<b>明文已无法还原</b>（创建于本功能上线前，面板只存哈希）。'
+        +   '点右侧按钮换一把新 key，即可复制。'
+        + '</span>'
+        + '<button type="button" class="c2a-kv-btn c2a-kv-primary">生成可复制密钥</button>';
       var rb = line.querySelector('.c2a-kv-btn');
       rb.onclick = function(){
         if (!confirm('重新生成会换一把新密钥，旧密钥立即失效。\n\n继续吗？')) return;
         rb.disabled = true; rb.textContent = '生成中…';
         // 必须带上面板的密钥 id，否则后端只会收到空 id（报「缺少 id」）
-        var hit = (kvCache && kvCache.list || []).find(function(it){
-          return (it.name || '') === name;
-        });
-        var kid = hit ? hit.id : '';
+        var kid = row.getAttribute('data-c2a-keyid') || '';
+        if (!kid){
+          var hit = (kvCache && kvCache.list || []).find(function(it){
+            return (it.name || '') === name;
+          });
+          kid = hit ? hit.id : '';
+        }
         if (!kid){ alert('没找到这条密钥的 id，请刷新页面重试'); return; }
         kvApi('POST', '/p/api/keys/regenerate', {id: kid, name: name})
           .then(function(d){
             if (d && d.ok){ loadAndRender(); }
-            else { rb.disabled = false; rb.textContent = '重新生成';
+            else { rb.disabled = false; rb.textContent = '生成可复制密钥';
                    alert((d && d.error) || '生成失败'); }
           }).catch(function(e){
-            rb.disabled = false; rb.textContent = '重新生成';
+            rb.disabled = false; rb.textContent = '生成可复制密钥';
             alert('请求失败：' + e.message);
           });
       };
