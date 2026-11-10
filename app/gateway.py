@@ -770,7 +770,13 @@ NAVBAR = r"""
       rb.onclick = function(){
         if (!confirm('重新生成会换一把新密钥，旧密钥立即失效。\n\n继续吗？')) return;
         rb.disabled = true; rb.textContent = '生成中…';
-        kvApi('POST', '/p/api/keys/regenerate', {name: name})
+        // 必须带上面板的密钥 id，否则后端只会收到空 id（报「缺少 id」）
+        var hit = (kvCache && kvCache.list || []).find(function(it){
+          return (it.name || '') === name;
+        });
+        var kid = hit ? hit.id : '';
+        if (!kid){ alert('没找到这条密钥的 id，请刷新页面重试'); return; }
+        kvApi('POST', '/p/api/keys/regenerate', {id: kid, name: name})
           .then(function(d){
             if (d && d.ok){ loadAndRender(); }
             else { rb.disabled = false; rb.textContent = '重新生成';
@@ -840,6 +846,34 @@ NAVBAR = r"""
             setTimeout(function(){ loadAndRender(); }, 1800);
           }
           break;
+        }
+        t = t.parentElement;
+      }
+    }, true);
+
+    // 劫持「创建用户密钥」按钮：
+    // 面板原生弹窗创建的密钥，明文不会进网关档案，刷新后就变成「不可恢复」。
+    // 这里改成走网关的 /p/api/keys/create（会存明文），创建完立刻能看见明文。
+    document.addEventListener('click', function(e){
+      var t = e.target;
+      while (t && t !== document.body){
+        if (t.tagName === 'BUTTON'
+            && (t.textContent || '').trim() === '创建用户密钥'){
+          e.preventDefault();
+          e.stopPropagation();
+          var name = prompt('给这把新密钥起个名字（比如「我的电脑」「Cherry Studio」）：', '');
+          if (name === null) return;
+          kvApi('POST', '/p/api/keys/create', {name: (name || '').trim()})
+            .then(function(d){
+              if (d && d.ok && d.key){
+                alert('已创建密钥：' + String.fromCharCode(10) + String.fromCharCode(10) + d.key + String.fromCharCode(10) + String.fromCharCode(10) + '已存入列表，可随时复制。');
+                kvCache = null;
+                loadAndRender();
+              } else {
+                alert((d && d.error) || '创建失败');
+              }
+            }).catch(function(err){ alert('请求失败：' + err.message); });
+          return;
         }
         t = t.parentElement;
       }
@@ -2242,6 +2276,33 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
         except (ConnectionAbortedError, ConnectionResetError, BrokenPipeError):
             self.close_connection = True
+
+    def do_DELETE(self):
+        """DELETE 请求：全部转发给原生面板。
+
+        为什么必须实现：BaseHTTPRequestHandler 默认没有 do_DELETE，
+        请求会直接收到 "501 Unsupported method"，根本没到面板。
+        面板的「删除用户密钥」正是 DELETE /api/auth/users/{id}，
+        所以之前点删除会报 501。
+        """
+        path = self.path.split("?")[0]
+        # 删除用户密钥后，同步把明文档案里的记录清掉
+        if path.startswith("/api/auth/users/"):
+            try:
+                import key_vault
+                kid = urllib.parse.unquote(path.rsplit("/", 1)[-1])
+                key_vault.remove(kid)
+            except Exception:
+                pass
+        self._proxy_to_panel()
+
+    def do_PUT(self):
+        """PUT 请求：全部转发给原生面板（面板部分接口用 PUT）。"""
+        self._proxy_to_panel()
+
+    def do_PATCH(self):
+        """PATCH 请求：全部转发给原生面板，保证方法不被 501 拦掉。"""
+        self._proxy_to_panel()
 
     def do_GET(self):
         path = self.path.split("?")[0].rstrip("/") or "/"

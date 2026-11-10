@@ -27,7 +27,7 @@ MIHOMO = "http://127.0.0.1:9090"
 
 # ---------------------------------------------------------------- 品牌信息
 APP_NAME = "ChatGPT2API"
-APP_VERSION = "v2.4.1"
+APP_VERSION = "v2.4.2"
 REPO_OWNER = "luo-sri"
 REPO_NAME = "chatgpt2api"
 REPO_URL = "https://github.com/%s/%s" % (REPO_OWNER, REPO_NAME)
