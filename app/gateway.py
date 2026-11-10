@@ -546,6 +546,329 @@ NAVBAR = r"""
     if (pwdTries > 40) clearInterval(pwdTimer);
   }, 350);
 
+  // ---------- 设置页：用户密钥（明文显示 + 一键复制）----------
+  // 面板的密钥列表只有名称/时间，因为 auth_keys.json 只存 SHA256 哈希，
+  // 明文创建后就被丢弃 —— 用户想再复制一次只能删了重建。
+  // 这里用网关的 /p/api/keys 接口（网关侧维护了明文档案）渲染一份完整的密钥表：
+  //   · 明文默认打码，点「显示」才展开，避免录屏/截图泄露
+  //   · 每行都有「复制」按钮
+  //   · 历史遗留（明文已丢失）标记「不可恢复」，提供「重新生成」
+  var keysBoxId = 'c2a-keys-box';
+  var keysTimer = null;
+
+  function keysCss(){
+    if (document.getElementById('c2a-keys-css')) return;
+    var st = document.createElement('style');
+    st.id = 'c2a-keys-css';
+    st.textContent = ''
+      + '#c2a-keys-box{margin-top:18px;padding-top:18px;'
+      + 'border-top:1px solid rgba(28,25,23,.08);font-family:inherit}'
+      + '#c2a-keys-box .c2a-k-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}'
+      + '#c2a-keys-box .c2a-k-title{font-size:13.5px;font-weight:600;color:#1c1917}'
+      + '#c2a-keys-box .c2a-k-sp{flex:1}'
+      + '#c2a-keys-box .c2a-k-btn{border:0;border-radius:8px;padding:6px 12px;'
+      + 'font-size:12px;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}'
+      + '#c2a-keys-box .c2a-k-btn.p{background:#1c1917;color:#fff}'
+      + '#c2a-keys-box .c2a-k-btn.p:hover{background:#292524}'
+      + '#c2a-keys-box .c2a-k-btn.p:disabled{background:#d6d3d1;cursor:not-allowed}'
+      + '#c2a-keys-box .c2a-k-btn.g{background:transparent;color:#78716c;'
+      + 'border:1px solid rgba(28,25,23,.14)}'
+      + '#c2a-keys-box .c2a-k-btn.g:hover{background:rgba(28,25,23,.05);color:#1c1917}'
+      + '#c2a-keys-box .c2a-k-btn.x{background:transparent;color:#dc2626;border:0;padding:6px 8px}'
+      + '#c2a-keys-box .c2a-k-btn.x:hover{background:rgba(220,38,38,.08)}'
+      + '#c2a-keys-box .c2a-k-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
+      + 'padding:10px 12px;border-radius:10px;background:#fafaf9;margin-bottom:8px;'
+      + 'border:1px solid rgba(28,25,23,.06)}'
+      + '#c2a-keys-box .c2a-k-name{font-size:12.5px;font-weight:600;color:#1c1917;'
+      + 'min-width:88px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#c2a-keys-box .c2a-k-key{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+      + 'font-size:12px;color:#44403c;background:#fff;border:1px solid rgba(28,25,23,.1);'
+      + 'border-radius:7px;padding:4px 9px;flex:1;min-width:200px;'
+      + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
+      + '#c2a-keys-box .c2a-k-time{font-size:11.5px;color:#a8a29e;white-space:nowrap}'
+      + '#c2a-keys-box .c2a-k-tag{font-size:11px;padding:1px 7px;border-radius:999px;'
+      + 'background:#fef3c7;color:#b45309;white-space:nowrap}'
+      + '#c2a-keys-box .c2a-k-empty{font-size:12.5px;color:#a8a29e;padding:10px 0}'
+      + '#c2a-keys-box .c2a-k-msg{font-size:12.5px;min-height:18px;margin-top:6px}'
+      + '#c2a-keys-box .c2a-k-msg.ok{color:#16a34a}'
+      + '#c2a-keys-box .c2a-k-msg.bad{color:#dc2626}'
+      + '.dark #c2a-keys-box{border-color:rgba(245,245,244,.1)}'
+      + '.dark #c2a-keys-box .c2a-k-title{color:#f5f5f4}'
+      + '.dark #c2a-keys-box .c2a-k-row{background:#12100e;'
+      + 'border-color:rgba(245,245,244,.08)}'
+      + '.dark #c2a-keys-box .c2a-k-name{color:#e7e5e4}'
+      + '.dark #c2a-keys-box .c2a-k-key{background:#1c1917;color:#d6d3d1;'
+      + 'border-color:rgba(245,245,244,.12)}'
+      + '.dark #c2a-keys-box .c2a-k-btn.p{background:#f5f5f4;color:#1c1917}'
+      + '.dark #c2a-keys-box .c2a-k-btn.g{color:#a8a29e;'
+      + 'border-color:rgba(245,245,244,.16)}'
+      + '.dark #c2a-keys-box .c2a-k-btn.g:hover{background:rgba(245,245,244,.08);color:#f5f5f4}'
+      + '.dark #c2a-keys-box .c2a-k-tag{background:rgba(251,191,36,.16);color:#fcd34d}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  /* 打码：保留前 6 位和后 4 位，中间用圆点 */
+  function maskKey(k){
+    if (!k) return '';
+    if (k.length <= 12) return k.slice(0, 3) + '••••';
+    return k.slice(0, 6) + '••••••••' + k.slice(-4);
+  }
+
+  function copyText(t){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(t);
+    }
+    // 老浏览器 / 非 https 兜底
+    return new Promise(function(res, rej){
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = t;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        ta.remove();
+        ok ? res() : rej(new Error('execCommand failed'));
+      } catch(e){ rej(e); }
+    });
+  }
+
+  /* 取鉴权 key（与版本面板同逻辑） */
+  function keysAuthKey(){
+    // 优先用面板登录口令（IndexedDB 里的），因为它在面板侧一定有效；
+    // 页面注入的 sk- key 可能因用户删除密钥而失效。
+    var ls = '';
+    try { ls = localStorage.getItem('c2a_key') || ''; } catch(e){}
+    if (ls && ls !== '__C2A_PAGE_KEY__') return Promise.resolve(ls);
+    return new Promise(function(res){
+      try {
+        var r = indexedDB.open('chatgpt2api');
+        r.onupgradeneeded = function(){ try { r.transaction.abort(); } catch(e){} res(''); };
+        r.onerror = function(){ res(''); };
+        r.onsuccess = function(){
+          var db = r.result;
+          try {
+            if (!db.objectStoreNames.contains('auth')) { db.close(); return res(''); }
+            var g = db.transaction('auth').objectStore('auth').get('chatgpt2api_auth_key');
+            g.onsuccess = function(){
+              var v = g.result; db.close();
+              var k = (v && v.key) || (typeof v === 'string' ? v : '');
+              if (k) return res(k);
+              // 兜底：用页面注入的 key
+              var inj = '__C2A_PAGE_KEY__';
+              res(inj && inj.indexOf('C2A_PAGE_KEY') < 0 ? inj : '');
+            };
+            g.onerror = function(){ db.close(); res(''); };
+          } catch(e){ try{db.close();}catch(e2){} res(''); }
+        };
+      } catch(e){ res(''); }
+    });
+  }
+
+  function apiKeys(method, path, body){
+    return keysAuthKey().then(function(k){
+      var opt = {method: method, headers: {'Authorization': 'Bearer ' + (k || '')}};
+      if (body){ opt.headers['Content-Type'] = 'application/json';
+                 opt.body = JSON.stringify(body); }
+      return fetch(path, opt).then(function(r){ return r.json(); });
+    });
+  }
+
+  function buildKeysBox(){
+    var box = document.createElement('div');
+    box.id = keysBoxId;
+    box.innerHTML = ''
+      + '<div class="c2a-k-head">'
+      + '  <div class="c2a-k-title">用户密钥</div>'
+      + '  <span class="c2a-k-sp"></span>'
+      + '  <button type="button" class="c2a-k-btn p" id="c2a-k-new">新建密钥</button>'
+      + '</div>'
+      + '<div id="c2a-k-list"><div class="c2a-k-empty">加载中…</div></div>'
+      + '<div class="c2a-k-msg" id="c2a-k-msg"></div>';
+    return box;
+  }
+
+  function renderKeys(box, items){
+    var list = box.querySelector('#c2a-k-list');
+    if (!items || !items.length){
+      list.innerHTML = '<div class="c2a-k-empty">还没有密钥，点右上角「新建密钥」创建一个。</div>';
+      return;
+    }
+    var h = '';
+    items.forEach(function(it, idx){
+      var plain = it.plain_key || '';
+      var recoverable = !!it.recoverable;
+      var shown = plain ? maskKey(plain) : '';
+      h += '<div class="c2a-k-row" data-i="' + idx + '">'
+        + '  <span class="c2a-k-name" title="' + esc(it.name || '') + '">'
+        +      esc(it.name || '(未命名)') + '</span>'
+        + (plain
+            ? '  <span class="c2a-k-key" data-full="' + esc(plain) + '">' + esc(shown) + '</span>'
+            : '  <span class="c2a-k-key" style="color:#a8a29e" '
+              + 'title="这把密钥是在本功能上线前创建的，面板只存了哈希，明文无法还原">'
+              + '明文不可恢复</span>')
+        + (recoverable ? '' : '<span class="c2a-k-tag">历史密钥</span>')
+        + '  <span class="c2a-k-time">' + esc((it.created_at || '').slice(0, 10)) + '</span>'
+        + (plain
+            ? '  <button class="c2a-k-btn g" data-act="toggle" data-i="' + idx + '">显示</button>'
+              + '  <button class="c2a-k-btn p" data-act="copy" data-i="' + idx + '">复制</button>'
+            : '  <button class="c2a-k-btn g" data-act="regen" data-i="' + idx + '">重新生成</button>')
+        + '  <button class="c2a-k-btn x" data-act="del" data-i="' + idx + '">删除</button>'
+        + '</div>';
+    });
+    list.innerHTML = h;
+
+    list.querySelectorAll('[data-act]').forEach(function(btn){
+      btn.onclick = function(){
+        var i = +btn.getAttribute('data-i');
+        var act = btn.getAttribute('data-act');
+        var it = items[i] || {};
+        var msg = box.querySelector('#c2a-k-msg');
+        function say(t, ok){ msg.textContent = t; msg.className = 'c2a-k-msg' + (ok ? ' ok' : ' bad'); }
+
+        if (act === 'toggle'){
+          var keyEl = list.querySelector('.c2a-k-row[data-i="' + i + '"] .c2a-k-key');
+          if (!keyEl) return;
+          var full = keyEl.getAttribute('data-full') || '';
+          var isMasked = keyEl.textContent.indexOf('••') >= 0;
+          keyEl.textContent = isMasked ? full : maskKey(full);
+          btn.textContent = isMasked ? '隐藏' : '显示';
+          return;
+        }
+        if (act === 'copy'){
+          copyText(it.plain_key || '').then(function(){
+            say('✅ 已复制到剪贴板', true);
+            btn.textContent = '已复制';
+            setTimeout(function(){ btn.textContent = '复制'; }, 1500);
+          }).catch(function(){
+            say('复制失败，请点「显示」后手动选中复制', false);
+          });
+          return;
+        }
+        if (act === 'regen'){
+          if (!confirm('这把密钥的明文已无法恢复。\n重新生成会换一把新密钥，旧密钥立即失效，需要更新到使用它的地方。\n\n继续吗？')) return;
+          btn.disabled = true; btn.textContent = '生成中…';
+          apiKeys('POST', '/p/api/keys/regenerate', {id: it.id, name: it.name})
+            .then(function(d){
+              if (d && d.ok){
+                say('✅ 已生成新密钥：' + d.key, true);
+                loadKeys(box);
+              } else {
+                btn.disabled = false; btn.textContent = '重新生成';
+                say((d && d.error) || '生成失败', false);
+              }
+            }).catch(function(e){ btn.disabled = false; btn.textContent = '重新生成';
+              say('请求失败：' + e.message, false); });
+          return;
+        }
+        if (act === 'del'){
+          if (!confirm('删除密钥「' + (it.name || '') + '」？\n删除后使用它的地方会立即失效。')) return;
+          apiKeys('POST', '/p/api/keys/delete', {id: it.id})
+            .then(function(d){
+              if (d && d.ok){ say('已删除', true); loadKeys(box); }
+              else say((d && d.error) || '删除失败', false);
+            }).catch(function(e){ say('请求失败：' + e.message, false); });
+          return;
+        }
+      };
+    });
+  }
+
+  function esc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function loadKeys(box){
+    if (!box) return;
+    apiKeys('GET', '/p/api/keys').then(function(d){
+      if (d && d.ok){ renderKeys(box, d.items || []); }
+      else {
+        box.querySelector('#c2a-k-list').innerHTML =
+          '<div class="c2a-k-empty">加载失败：' + esc((d && d.error) || '未知错误') + '</div>';
+      }
+    }).catch(function(e){
+      box.querySelector('#c2a-k-list').innerHTML =
+        '<div class="c2a-k-empty">加载失败：' + esc(e.message) + '</div>';
+    });
+  }
+
+  /* 找到「基础配置」卡片（与密码表单同一张） */
+  function findSettingsCard(){
+    var KEY = '管理员登录密钥继续从部署配置读取';
+    var nodes = document.querySelectorAll('div');
+    var best = null, bestArea = 1e12;
+    for (var i = 0; i < nodes.length; i++){
+      var el = nodes[i];
+      var cls = (el.className || '').toString();
+      if (cls.indexOf('rounded-2xl') < 0) continue;
+      if ((el.textContent || '').indexOf(KEY) < 0) continue;
+      var r = el.getBoundingClientRect();
+      if (!r.width || !r.height) continue;
+      var area = r.width * r.height;
+      if (area < bestArea){ bestArea = area; best = el; }
+    }
+    return best;
+  }
+
+  function mountKeysBox(){
+    if (location.pathname.indexOf('/settings') !== 0) return;
+    if (document.getElementById(keysBoxId)) return;
+    var card = findSettingsCard();
+    if (!card) return;
+    keysCss();
+    var box = buildKeysBox();
+    card.appendChild(box);
+    loadKeys(box);
+
+    box.querySelector('#c2a-k-new').onclick = function(){
+      var name = prompt('给这把新密钥起个名字（比如「我的电脑」「Cherry Studio」）：', '');
+      if (name === null) return;
+      var btn = this;
+      btn.disabled = true; btn.textContent = '创建中…';
+      apiKeys('POST', '/p/api/keys/create', {name: (name || '').trim()})
+        .then(function(d){
+          btn.disabled = false; btn.textContent = '新建密钥';
+          var msg = box.querySelector('#c2a-k-msg');
+          if (d && d.ok && d.key){
+            msg.className = 'c2a-k-msg ok';
+            msg.textContent = '✅ 已创建，密钥：' + d.key + '（已存入列表，可随时复制）';
+            loadKeys(box);
+          } else {
+            msg.className = 'c2a-k-msg bad';
+            msg.textContent = (d && d.error) || '创建失败';
+          }
+        }).catch(function(e){
+          btn.disabled = false; btn.textContent = '新建密钥';
+          box.querySelector('#c2a-k-msg').textContent = '请求失败：' + e.message;
+        });
+    };
+  }
+
+  function watchKeys(){
+    if (keysTimer) return;
+    // React 重渲染会抹掉节点，观察并补回
+    var mo = new MutationObserver(function(){
+      if (location.pathname.indexOf('/settings') !== 0) return;
+      if (document.getElementById(keysBoxId)) return;
+      mountKeysBox();
+    });
+    mo.observe(document.body, {childList: true, subtree: true});
+    mountKeysBox();
+  }
+
+  var keysTries = 0;
+  var keysPoller = setInterval(function(){
+    keysTries++;
+    if (location.pathname.indexOf('/settings') === 0 && findSettingsCard()){
+      clearInterval(keysPoller);
+      watchKeys();
+      return;
+    }
+    if (keysTries > 40) clearInterval(keysPoller);
+  }, 350);
+
   // ---------- 复用面板登录态 ----------
   function mirrorKey(){
     if (localStorage.getItem('c2a_key')) return;
@@ -1824,6 +2147,10 @@ class Handler(BaseHTTPRequestHandler):
             v = open("/app/data/page-api-key.txt", encoding="utf-8").read().strip()
         except Exception:
             v = ""
+        # 文件里的 key 可能已经在面板侧被删除/失效（用户删了密钥、或换了面板数据）。
+        # 必须实际校验一次，否则页面会拿着一个死 key 去调接口，全部 401。
+        if v and not self._panel_key_valid(v):
+            v = ""
         if not v:
             v = self._create_page_key()
         if not v:
@@ -2049,6 +2376,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/p/api/auth/password":
                 self._json(200, {"changed": bool(webapi.auth_override_key())})
                 return
+            if path == "/p/api/keys":
+                # 用户密钥列表（带明文，供页面显示 + 一键复制）
+                if not self._auth_ok():
+                    self._json(401, {"ok": False, "error": "需要登录"})
+                    return
+                try:
+                    import key_vault
+                    op_k = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    req_k = urllib.request.Request(PANEL + "/api/auth/users")
+                    req_k.add_header("Authorization", "Bearer " + UPSTREAM_KEY)
+                    raw_k = op_k.open(req_k, timeout=20).read()
+                    data_k = json.loads(raw_k.decode())
+                    items_k = key_vault.merge_into(data_k.get("items") or [])
+                    self._json(200, {"ok": True, "items": items_k})
+                except Exception as e:
+                    self._json(200, {"ok": False, "error": str(e)[:150], "items": []})
+                return
             if path == "/p/api/update/info":
                 # 检查是否有新版本，并带回该版本的更新说明
                 try:
@@ -2149,6 +2493,89 @@ class Handler(BaseHTTPRequestHandler):
 
             if path == "/p/api/onboarding":
                 self._json(200, webapi.set_onboarding(bool(body.get("done", True))))
+                return
+
+            # ---------- 用户密钥管理 ----------
+            # 新建：先让面板生成，拿到明文后存进网关档案（面板只留哈希）
+            if path == "/p/api/keys/create":
+                if not self._auth_ok():
+                    self._json(401, {"ok": False, "error": "需要登录"})
+                    return
+                try:
+                    import key_vault
+                    name_k = (body.get("name") or "").strip()
+                    payload_k = json.dumps({"name": name_k, "role": "user"}).encode()
+                    op_k = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    req_k = urllib.request.Request(PANEL + "/api/auth/users",
+                                                   data=payload_k, method="POST")
+                    req_k.add_header("Authorization", "Bearer " + UPSTREAM_KEY)
+                    req_k.add_header("Content-Type", "application/json")
+                    d_k = json.loads(op_k.open(req_k, timeout=30).read().decode())
+                    plain_k = (d_k.get("key") or "").strip()
+                    item_k = d_k.get("item") or {}
+                    if plain_k and item_k.get("id"):
+                        key_vault.put(item_k.get("id"), item_k.get("name") or name_k,
+                                      plain_k, item_k.get("created_at") or "")
+                    self._json(200, {"ok": bool(plain_k), "key": plain_k,
+                                     "item": item_k})
+                except Exception as e:
+                    self._json(200, {"ok": False, "error": str(e)[:200]})
+                return
+
+            # 删除：面板删掉后同步清档案
+            if path == "/p/api/keys/delete":
+                if not self._auth_ok():
+                    self._json(401, {"ok": False, "error": "需要登录"})
+                    return
+                try:
+                    import key_vault
+                    kid = (body.get("id") or "").strip()
+                    if not kid:
+                        self._json(200, {"ok": False, "error": "缺少 id"})
+                        return
+                    # 面板的删除是 POST /api/auth/users/{id} + enabled=false 或专用删除
+                    op_k = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    req_k = urllib.request.Request(
+                        PANEL + "/api/auth/users/" + urllib.parse.quote(kid, safe=""),
+                        method="DELETE")
+                    req_k.add_header("Authorization", "Bearer " + UPSTREAM_KEY)
+                    try:
+                        op_k.open(req_k, timeout=20).read()
+                    except Exception:
+                        pass
+                    key_vault.remove(kid)
+                    self._json(200, {"ok": True})
+                except Exception as e:
+                    self._json(200, {"ok": False, "error": str(e)[:200]})
+                return
+
+            # 重新生成：给「历史遗留、明文已丢失」的密钥换一把新 key。
+            # 面板支持直接改 key（POST /api/auth/users/{id} + {key: 新值}），
+            # 比删了重建更稳 —— id 不变，页面上其他引用不会断。
+            if path == "/p/api/keys/regenerate":
+                if not self._auth_ok():
+                    self._json(401, {"ok": False, "error": "需要登录"})
+                    return
+                try:
+                    import key_vault, secrets as _sec
+                    kid = (body.get("id") or "").strip()
+                    if not kid:
+                        self._json(200, {"ok": False, "error": "缺少 id"})
+                        return
+                    new_key = "sk-" + _sec.token_urlsafe(24)
+                    op_r = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                    req_r = urllib.request.Request(
+                        PANEL + "/api/auth/users/" + urllib.parse.quote(kid, safe=""),
+                        data=json.dumps({"key": new_key}).encode(), method="POST")
+                    req_r.add_header("Authorization", "Bearer " + UPSTREAM_KEY)
+                    req_r.add_header("Content-Type", "application/json")
+                    d_r = json.loads(op_r.open(req_r, timeout=30).read().decode())
+                    item_r = d_r.get("item") or {}
+                    key_vault.put(kid, item_r.get("name") or "", new_key,
+                                  item_r.get("created_at") or "")
+                    self._json(200, {"ok": True, "key": new_key, "item": item_r})
+                except Exception as e:
+                    self._json(200, {"ok": False, "error": str(e)[:200]})
                 return
 
             # 项目内一键更新：下载新版代码 → 校验 → 落盘 → 重启
