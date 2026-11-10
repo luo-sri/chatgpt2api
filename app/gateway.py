@@ -318,10 +318,11 @@ NAVBAR = r"""
     var st = document.createElement('style');
     st.id = 'c2a-pwd-css';
     st.textContent = ''
-      + '#c2a-pwd-box{margin-top:16px;padding-top:16px;'
-      + 'border-top:1px solid rgba(28,25,23,.08);font-family:inherit}'
-      + '#c2a-pwd-box .c2a-pwd-row{display:flex;align-items:flex-start;gap:12px}'
-      + '#c2a-pwd-box .c2a-pwd-main{flex:1;min-width:0}'
+      + '#c2a-pwd-box{margin-bottom:8px;padding-bottom:18px;'
+      + 'border-bottom:1px solid rgba(28,25,23,.08);font-family:inherit}'
+      + '#c2a-pwd-box .c2a-pwd-row{display:flex;align-items:flex-start;'
+      + 'justify-content:space-between;gap:16px;flex-wrap:wrap}'
+      + '#c2a-pwd-box .c2a-pwd-main{flex:1;min-width:240px}'
       + '#c2a-pwd-box .c2a-pwd-t{font-size:13.5px;font-weight:600;color:#1c1917;line-height:1.6}'
       + '#c2a-pwd-box .c2a-pwd-d{font-size:12px;color:#78716c;line-height:1.7;margin-top:2px}'
       + '#c2a-pwd-box .c2a-pwd-btn{border:0;border-radius:9px;padding:7px 14px;'
@@ -332,7 +333,7 @@ NAVBAR = r"""
       + '#c2a-pwd-box .c2a-pwd-btn.g{background:transparent;color:#78716c;'
       + 'border:1px solid rgba(28,25,23,.14)}'
       + '#c2a-pwd-box .c2a-pwd-btn.g:hover{background:rgba(28,25,23,.05);color:#1c1917}'
-      + '#c2a-pwd-box .c2a-pwd-form{display:none;margin-top:14px;max-width:420px}'
+      + '#c2a-pwd-box .c2a-pwd-form{display:none;margin-top:14px;max-width:520px}'
       + '#c2a-pwd-box .c2a-pwd-form.on{display:block}'
       + '#c2a-pwd-box input{width:100%;height:38px;box-sizing:border-box;'
       + 'border:1px solid rgba(28,25,23,.14);border-radius:9px;padding:0 12px;'
@@ -399,9 +400,11 @@ NAVBAR = r"""
       var cls = (el.className || '').toString();
       if (cls.indexOf('rounded-2xl') < 0) continue;
       if ((el.textContent || '').indexOf(KEY) < 0) continue;
+      // 注意：不能用 getBoundingClientRect 判断可见性。
+      // 用户切到「用户密钥」tab 后，「基础配置」panel 变成 inactive（隐藏），
+      // 宽高是 0，按可见性过滤会把这张卡片漏掉，导致密码面板消失。
       var r = el.getBoundingClientRect();
-      if (!r.width || !r.height) continue;
-      var area = r.width * r.height;
+      var area = r.width && r.height ? r.width * r.height : 1e11;
       if (area < bestArea){ bestArea = area; best = el; }
     }
     return best;
@@ -519,7 +522,15 @@ NAVBAR = r"""
     var card = findBasicCard();
     if (!card) return;
     pwdCss();
-    card.appendChild(buildPwdBox());
+    var box = buildPwdBox();
+    // 放到「基础配置」的**最顶部**（用户要求：最重要的设置放最上面），
+    // 而不是追加到卡片末尾。用 insertBefore 而不是 appendChild。
+    var inner = card.querySelector('.space-y-6') || card;
+    if (inner.firstChild){
+      inner.insertBefore(box, inner.firstChild);
+    } else {
+      inner.appendChild(box);
+    }
   }
 
   function watchSettings(){
@@ -546,100 +557,55 @@ NAVBAR = r"""
     if (pwdTries > 40) clearInterval(pwdTimer);
   }, 350);
 
-  // ---------- 设置页：用户密钥（明文显示 + 一键复制）----------
-  // 面板的密钥列表只有名称/时间，因为 auth_keys.json 只存 SHA256 哈希，
-  // 明文创建后就被丢弃 —— 用户想再复制一次只能删了重建。
-  // 这里用网关的 /p/api/keys 接口（网关侧维护了明文档案）渲染一份完整的密钥表：
-  //   · 明文默认打码，点「显示」才展开，避免录屏/截图泄露
-  //   · 每行都有「复制」按钮
-  //   · 历史遗留（明文已丢失）标记「不可恢复」，提供「重新生成」
-  var keysBoxId = 'c2a-keys-box';
-  var keysTimer = null;
+  // ---------- 设置页 →「用户密钥」子页面：明文显示 + 一键复制 ----------
+  // 面板的 auth_keys.json 只存 SHA256 哈希，列表里没有明文，
+  // 想再复制一次只能删了重建。网关侧另存了明文档案（app/key_vault.py），
+  // 通过 /p/api/keys 提供。这里把明文与「复制」按钮直接注入面板自己的
+  // 密钥列表行里（不另起一块区域），跟「编辑/禁用/删除」放在一起。
+  var KEY_ATTR = 'data-c2a-keyed';
 
-  function keysCss(){
-    if (document.getElementById('c2a-keys-css')) return;
+  function kvCss(){
+    if (document.getElementById('c2a-kv-css')) return;
     var st = document.createElement('style');
-    st.id = 'c2a-keys-css';
+    st.id = 'c2a-kv-css';
     st.textContent = ''
-      + '#c2a-keys-box{margin-top:18px;padding-top:18px;'
-      + 'border-top:1px solid rgba(28,25,23,.08);font-family:inherit}'
-      + '#c2a-keys-box .c2a-k-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}'
-      + '#c2a-keys-box .c2a-k-title{font-size:13.5px;font-weight:600;color:#1c1917}'
-      + '#c2a-keys-box .c2a-k-sp{flex:1}'
-      + '#c2a-keys-box .c2a-k-btn{border:0;border-radius:8px;padding:6px 12px;'
-      + 'font-size:12px;cursor:pointer;font-family:inherit;transition:.15s;white-space:nowrap}'
-      + '#c2a-keys-box .c2a-k-btn.p{background:#1c1917;color:#fff}'
-      + '#c2a-keys-box .c2a-k-btn.p:hover{background:#292524}'
-      + '#c2a-keys-box .c2a-k-btn.p:disabled{background:#d6d3d1;cursor:not-allowed}'
-      + '#c2a-keys-box .c2a-k-btn.g{background:transparent;color:#78716c;'
-      + 'border:1px solid rgba(28,25,23,.14)}'
-      + '#c2a-keys-box .c2a-k-btn.g:hover{background:rgba(28,25,23,.05);color:#1c1917}'
-      + '#c2a-keys-box .c2a-k-btn.x{background:transparent;color:#dc2626;border:0;padding:6px 8px}'
-      + '#c2a-keys-box .c2a-k-btn.x:hover{background:rgba(220,38,38,.08)}'
-      + '#c2a-keys-box .c2a-k-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;'
-      + 'padding:10px 12px;border-radius:10px;background:#fafaf9;margin-bottom:8px;'
-      + 'border:1px solid rgba(28,25,23,.06)}'
-      + '#c2a-keys-box .c2a-k-name{font-size:12.5px;font-weight:600;color:#1c1917;'
-      + 'min-width:88px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
-      + '#c2a-keys-box .c2a-k-key{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
-      + 'font-size:12px;color:#44403c;background:#fff;border:1px solid rgba(28,25,23,.1);'
-      + 'border-radius:7px;padding:4px 9px;flex:1;min-width:200px;'
-      + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'
-      + '#c2a-keys-box .c2a-k-time{font-size:11.5px;color:#a8a29e;white-space:nowrap}'
-      + '#c2a-keys-box .c2a-k-tag{font-size:11px;padding:1px 7px;border-radius:999px;'
-      + 'background:#fef3c7;color:#b45309;white-space:nowrap}'
-      + '#c2a-keys-box .c2a-k-empty{font-size:12.5px;color:#a8a29e;padding:10px 0}'
-      + '#c2a-keys-box .c2a-k-msg{font-size:12.5px;min-height:18px;margin-top:6px}'
-      + '#c2a-keys-box .c2a-k-msg.ok{color:#16a34a}'
-      + '#c2a-keys-box .c2a-k-msg.bad{color:#dc2626}'
-      + '.dark #c2a-keys-box{border-color:rgba(245,245,244,.1)}'
-      + '.dark #c2a-keys-box .c2a-k-title{color:#f5f5f4}'
-      + '.dark #c2a-keys-box .c2a-k-row{background:#12100e;'
-      + 'border-color:rgba(245,245,244,.08)}'
-      + '.dark #c2a-keys-box .c2a-k-name{color:#e7e5e4}'
-      + '.dark #c2a-keys-box .c2a-k-key{background:#1c1917;color:#d6d3d1;'
+      + '.c2a-kv-line{display:flex;align-items:center;gap:8px;margin-top:8px;'
+      + 'padding:7px 10px;border-radius:9px;background:#fafaf9;'
+      + 'border:1px solid rgba(28,25,23,.07);font-family:inherit;flex-wrap:wrap}'
+      + '.c2a-kv-lbl{font-size:11.5px;color:#a8a29e;white-space:nowrap}'
+      + '.c2a-kv-val{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;'
+      + 'font-size:12px;color:#1c1917;background:#fff;border:1px solid rgba(28,25,23,.1);'
+      + 'border-radius:7px;padding:3px 9px;flex:1;min-width:180px;'
+      + 'overflow-x:auto;white-space:nowrap;user-select:all;cursor:text}'
+      + '.c2a-kv-btn{border:1px solid rgba(28,25,23,.14);background:#fff;color:#44403c;'
+      + 'border-radius:7px;padding:4px 11px;font-size:11.5px;cursor:pointer;'
+      + 'font-family:inherit;white-space:nowrap;transition:.15s}'
+      + '.c2a-kv-btn:hover{background:#f5f5f4;color:#1c1917}'
+      + '.c2a-kv-btn.ok{background:#dcfce7;border-color:#86efac;color:#15803d}'
+      + '.c2a-kv-warn{font-size:11.5px;color:#b45309;background:#fffbeb;'
+      + 'border:1px solid #fde68a;border-radius:8px;padding:5px 9px}'
+      + '.dark .c2a-kv-line{background:#12100e;border-color:rgba(245,245,244,.08)}'
+      + '.dark .c2a-kv-val{background:#1c1917;color:#e7e5e4;'
       + 'border-color:rgba(245,245,244,.12)}'
-      + '.dark #c2a-keys-box .c2a-k-btn.p{background:#f5f5f4;color:#1c1917}'
-      + '.dark #c2a-keys-box .c2a-k-btn.g{color:#a8a29e;'
+      + '.dark .c2a-kv-btn{background:#1c1917;color:#d6d3d1;'
       + 'border-color:rgba(245,245,244,.16)}'
-      + '.dark #c2a-keys-box .c2a-k-btn.g:hover{background:rgba(245,245,244,.08);color:#f5f5f4}'
-      + '.dark #c2a-keys-box .c2a-k-tag{background:rgba(251,191,36,.16);color:#fcd34d}';
+      + '.dark .c2a-kv-btn:hover{background:#292524;color:#f5f5f4}'
+      + '.dark .c2a-kv-warn{background:rgba(120,53,15,.25);'
+      + 'border-color:rgba(253,230,138,.25);color:#fcd34d}';
     (document.head || document.documentElement).appendChild(st);
   }
 
-  /* 打码：保留前 6 位和后 4 位，中间用圆点 */
-  function maskKey(k){
-    if (!k) return '';
-    if (k.length <= 12) return k.slice(0, 3) + '••••';
-    return k.slice(0, 6) + '••••••••' + k.slice(-4);
+  function kvEsc(s){
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
   }
 
-  function copyText(t){
-    if (navigator.clipboard && navigator.clipboard.writeText){
-      return navigator.clipboard.writeText(t);
-    }
-    // 老浏览器 / 非 https 兜底
-    return new Promise(function(res, rej){
-      try {
-        var ta = document.createElement('textarea');
-        ta.value = t;
-        ta.style.cssText = 'position:fixed;left:-9999px;top:0';
-        document.body.appendChild(ta);
-        ta.select();
-        var ok = document.execCommand('copy');
-        ta.remove();
-        ok ? res() : rej(new Error('execCommand failed'));
-      } catch(e){ rej(e); }
-    });
-  }
-
-  /* 取鉴权 key（与版本面板同逻辑） */
-  function keysAuthKey(){
-    // 优先用面板登录口令（IndexedDB 里的），因为它在面板侧一定有效；
-    // 页面注入的 sk- key 可能因用户删除密钥而失效。
+  /* 鉴权：优先用面板登录口令（IndexedDB），页面注入的 sk- 作兜底 */
+  function kvAuthKey(){
     var ls = '';
     try { ls = localStorage.getItem('c2a_key') || ''; } catch(e){}
-    if (ls && ls !== '__C2A_PAGE_KEY__') return Promise.resolve(ls);
+    if (ls && ls.indexOf('C2A_PAGE_KEY') < 0) return Promise.resolve(ls);
     return new Promise(function(res){
       try {
         var r = indexedDB.open('chatgpt2api');
@@ -654,7 +620,6 @@ NAVBAR = r"""
               var v = g.result; db.close();
               var k = (v && v.key) || (typeof v === 'string' ? v : '');
               if (k) return res(k);
-              // 兜底：用页面注入的 key
               var inj = '__C2A_PAGE_KEY__';
               res(inj && inj.indexOf('C2A_PAGE_KEY') < 0 ? inj : '');
             };
@@ -665,8 +630,8 @@ NAVBAR = r"""
     });
   }
 
-  function apiKeys(method, path, body){
-    return keysAuthKey().then(function(k){
+  function kvApi(method, path, body){
+    return kvAuthKey().then(function(k){
       var opt = {method: method, headers: {'Authorization': 'Bearer ' + (k || '')}};
       if (body){ opt.headers['Content-Type'] = 'application/json';
                  opt.body = JSON.stringify(body); }
@@ -674,200 +639,227 @@ NAVBAR = r"""
     });
   }
 
-  function buildKeysBox(){
-    var box = document.createElement('div');
-    box.id = keysBoxId;
-    box.innerHTML = ''
-      + '<div class="c2a-k-head">'
-      + '  <div class="c2a-k-title">用户密钥</div>'
-      + '  <span class="c2a-k-sp"></span>'
-      + '  <button type="button" class="c2a-k-btn p" id="c2a-k-new">新建密钥</button>'
-      + '</div>'
-      + '<div id="c2a-k-list"><div class="c2a-k-empty">加载中…</div></div>'
-      + '<div class="c2a-k-msg" id="c2a-k-msg"></div>';
-    return box;
-  }
-
-  function renderKeys(box, items){
-    var list = box.querySelector('#c2a-k-list');
-    if (!items || !items.length){
-      list.innerHTML = '<div class="c2a-k-empty">还没有密钥，点右上角「新建密钥」创建一个。</div>';
-      return;
+  function kvCopy(text){
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      return navigator.clipboard.writeText(text);
     }
-    var h = '';
-    items.forEach(function(it, idx){
-      var plain = it.plain_key || '';
-      var recoverable = !!it.recoverable;
-      var shown = plain ? maskKey(plain) : '';
-      h += '<div class="c2a-k-row" data-i="' + idx + '">'
-        + '  <span class="c2a-k-name" title="' + esc(it.name || '') + '">'
-        +      esc(it.name || '(未命名)') + '</span>'
-        + (plain
-            ? '  <span class="c2a-k-key" data-full="' + esc(plain) + '">' + esc(shown) + '</span>'
-            : '  <span class="c2a-k-key" style="color:#a8a29e" '
-              + 'title="这把密钥是在本功能上线前创建的，面板只存了哈希，明文无法还原">'
-              + '明文不可恢复</span>')
-        + (recoverable ? '' : '<span class="c2a-k-tag">历史密钥</span>')
-        + '  <span class="c2a-k-time">' + esc((it.created_at || '').slice(0, 10)) + '</span>'
-        + (plain
-            ? '  <button class="c2a-k-btn g" data-act="toggle" data-i="' + idx + '">显示</button>'
-              + '  <button class="c2a-k-btn p" data-act="copy" data-i="' + idx + '">复制</button>'
-            : '  <button class="c2a-k-btn g" data-act="regen" data-i="' + idx + '">重新生成</button>')
-        + '  <button class="c2a-k-btn x" data-act="del" data-i="' + idx + '">删除</button>'
-        + '</div>';
-    });
-    list.innerHTML = h;
-
-    list.querySelectorAll('[data-act]').forEach(function(btn){
-      btn.onclick = function(){
-        var i = +btn.getAttribute('data-i');
-        var act = btn.getAttribute('data-act');
-        var it = items[i] || {};
-        var msg = box.querySelector('#c2a-k-msg');
-        function say(t, ok){ msg.textContent = t; msg.className = 'c2a-k-msg' + (ok ? ' ok' : ' bad'); }
-
-        if (act === 'toggle'){
-          var keyEl = list.querySelector('.c2a-k-row[data-i="' + i + '"] .c2a-k-key');
-          if (!keyEl) return;
-          var full = keyEl.getAttribute('data-full') || '';
-          var isMasked = keyEl.textContent.indexOf('••') >= 0;
-          keyEl.textContent = isMasked ? full : maskKey(full);
-          btn.textContent = isMasked ? '隐藏' : '显示';
-          return;
-        }
-        if (act === 'copy'){
-          copyText(it.plain_key || '').then(function(){
-            say('✅ 已复制到剪贴板', true);
-            btn.textContent = '已复制';
-            setTimeout(function(){ btn.textContent = '复制'; }, 1500);
-          }).catch(function(){
-            say('复制失败，请点「显示」后手动选中复制', false);
-          });
-          return;
-        }
-        if (act === 'regen'){
-          if (!confirm('这把密钥的明文已无法恢复。\n重新生成会换一把新密钥，旧密钥立即失效，需要更新到使用它的地方。\n\n继续吗？')) return;
-          btn.disabled = true; btn.textContent = '生成中…';
-          apiKeys('POST', '/p/api/keys/regenerate', {id: it.id, name: it.name})
-            .then(function(d){
-              if (d && d.ok){
-                say('✅ 已生成新密钥：' + d.key, true);
-                loadKeys(box);
-              } else {
-                btn.disabled = false; btn.textContent = '重新生成';
-                say((d && d.error) || '生成失败', false);
-              }
-            }).catch(function(e){ btn.disabled = false; btn.textContent = '重新生成';
-              say('请求失败：' + e.message, false); });
-          return;
-        }
-        if (act === 'del'){
-          if (!confirm('删除密钥「' + (it.name || '') + '」？\n删除后使用它的地方会立即失效。')) return;
-          apiKeys('POST', '/p/api/keys/delete', {id: it.id})
-            .then(function(d){
-              if (d && d.ok){ say('已删除', true); loadKeys(box); }
-              else say((d && d.error) || '删除失败', false);
-            }).catch(function(e){ say('请求失败：' + e.message, false); });
-          return;
-        }
-      };
+    return new Promise(function(res, rej){
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        ta.remove();
+        ok ? res() : rej(new Error('copy failed'));
+      } catch(e){ rej(e); }
     });
   }
 
-  function esc(s){
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
-  }
-
-  function loadKeys(box){
-    if (!box) return;
-    apiKeys('GET', '/p/api/keys').then(function(d){
-      if (d && d.ok){ renderKeys(box, d.items || []); }
-      else {
-        box.querySelector('#c2a-k-list').innerHTML =
-          '<div class="c2a-k-empty">加载失败：' + esc((d && d.error) || '未知错误') + '</div>';
+  /* 找到「用户密钥」这个 tabpanel（必须是激活状态） */
+  function kvPanel(){
+    var panels = document.querySelectorAll('[role="tabpanel"][data-state="active"]');
+    for (var i = 0; i < panels.length; i++){
+      var t = panels[i].innerText || '';
+      if (t.indexOf('用户密钥管理') >= 0 || t.indexOf('创建用户密钥') >= 0){
+        return panels[i];
       }
-    }).catch(function(e){
-      box.querySelector('#c2a-k-list').innerHTML =
-        '<div class="c2a-k-empty">加载失败：' + esc(e.message) + '</div>';
+    }
+    return null;
+  }
+
+  /* 列表里每一行：找「编辑」按钮所在的行容器 */
+  function kvRows(panel){
+    var out = [];
+    var btns = panel.querySelectorAll('button');
+    for (var i = 0; i < btns.length; i++){
+      var b = btns[i];
+      if ((b.textContent || '').trim() !== '编辑') continue;
+      // 向上找「含创建时间」的那一层 —— 那才是整行卡片（含密钥名）。
+      // 只判断「编辑+删除」会停在按钮区，那一层没有名字，会导致匹配不到明文。
+      var c = b.parentElement;
+      for (var k = 0; k < 6 && c; k++){
+        var txt = c.innerText || '';
+        if (txt.indexOf('创建时间') >= 0 && txt.indexOf('编辑') >= 0){
+          out.push(c);
+          break;
+        }
+        c = c.parentElement;
+      }
+    }
+    // 去重（嵌套容器可能重复命中）
+    var uniq = [];
+    out.forEach(function(el){
+      if (!uniq.some(function(x){ return x === el || x.contains(el); })) uniq.push(el);
+    });
+    return uniq;
+  }
+
+  /* 从行容器里读密钥名字：面板把名字渲染成一个较粗的文本节点 */
+  function kvName(row){
+    var t = (row.innerText || '').split(String.fromCharCode(10))
+      .map(function(x){ return x.trim(); }).filter(Boolean);
+    for (var i = 0; i < t.length; i++){
+      var v = t[i];
+      if (!v) continue;
+      if (v === '编辑' || v === '禁用' || v === '启用' || v === '删除') continue;
+      if (v.indexOf('已启用') === 0 || v.indexOf('已禁用') === 0) continue;
+      if (v.indexOf('创建时间') === 0 || v.indexOf('最近使用') === 0) continue;
+      // 跳过我们注入的内容，避免二次注入时把注入文本当名字
+      if (v.indexOf('明文不可恢复') >= 0 || v.indexOf('重新生成') >= 0) continue;
+      if (v.length > 40) continue;
+      return v;
+    }
+    return '';
+  }
+
+  function kvRenderOne(row, info){
+    if (row.getAttribute(KEY_ATTR) === '1') return;
+    // 必须「先删旧节点、再读名字」—— 否则 innerText 里混着上次注入的
+    // 「明文不可恢复/重新生成」，名字就解析错了（会匹配不到明文）。
+    var stale = row.querySelector('.c2a-kv-line');
+    if (stale) stale.remove();
+    var name = kvName(row);
+    row.setAttribute(KEY_ATTR, '1');
+    kvCss();
+
+    var plain = '';
+    var recoverable = false;
+    if (info){
+      // 按名字匹配（面板列表与档案都按名字对应；同名的取第一个未用的）
+      var hit = (info.list || []).find(function(it){
+        return (it.name || '') === name && it.plain_key;
+      });
+      if (hit){ plain = hit.plain_key; recoverable = true; }
+    }
+
+    var line = document.createElement('div');
+    line.className = 'c2a-kv-line';
+    if (plain){
+      line.innerHTML = ''
+        + '<span class="c2a-kv-lbl">密钥</span>'
+        + '<span class="c2a-kv-val" title="点击可全选">' + kvEsc(plain) + '</span>'
+        + '<button type="button" class="c2a-kv-btn">复制</button>';
+      var btn = line.querySelector('.c2a-kv-btn');
+      btn.onclick = function(){
+        kvCopy(plain).then(function(){
+          btn.textContent = '已复制';
+          btn.classList.add('ok');
+          setTimeout(function(){ btn.textContent = '复制'; btn.classList.remove('ok'); }, 1600);
+        }).catch(function(){
+          btn.textContent = '复制失败';
+          setTimeout(function(){ btn.textContent = '复制'; }, 1600);
+        });
+      };
+      // 点数值全选，方便手动复制
+      var val = line.querySelector('.c2a-kv-val');
+      val.onclick = function(){
+        try {
+          var r = document.createRange();
+          r.selectNodeContents(val);
+          var sel = window.getSelection();
+          sel.removeAllRanges(); sel.addRange(r);
+        } catch(e){}
+      };
+    } else {
+      line.innerHTML = ''
+        + '<span class="c2a-kv-warn">明文不可恢复（本功能上线前创建，面板只存了哈希）</span>'
+        + '<button type="button" class="c2a-kv-btn">重新生成</button>';
+      var rb = line.querySelector('.c2a-kv-btn');
+      rb.onclick = function(){
+        if (!confirm('重新生成会换一把新密钥，旧密钥立即失效。\n\n继续吗？')) return;
+        rb.disabled = true; rb.textContent = '生成中…';
+        kvApi('POST', '/p/api/keys/regenerate', {name: name})
+          .then(function(d){
+            if (d && d.ok){ loadAndRender(); }
+            else { rb.disabled = false; rb.textContent = '重新生成';
+                   alert((d && d.error) || '生成失败'); }
+          }).catch(function(e){
+            rb.disabled = false; rb.textContent = '重新生成';
+            alert('请求失败：' + e.message);
+          });
+      };
+    }
+    // 插在按钮行之前（行容器末尾），保持面板原生布局
+    row.appendChild(line);
+  }
+
+  var kvCache = null;
+
+  function loadAndRender(){
+    var panel = kvPanel();
+    if (!panel) return;
+    kvApi('GET', '/p/api/keys').then(function(d){
+      kvCache = { list: (d && d.items) || [], ok: !!(d && d.ok) };
+      applyAll();
+    }).catch(function(){
+      kvCache = { list: [], ok: false };
+      applyAll();
     });
   }
 
-  /* 找到「基础配置」卡片（与密码表单同一张） */
-  function findSettingsCard(){
-    var KEY = '管理员登录密钥继续从部署配置读取';
-    var nodes = document.querySelectorAll('div');
-    var best = null, bestArea = 1e12;
-    for (var i = 0; i < nodes.length; i++){
-      var el = nodes[i];
-      var cls = (el.className || '').toString();
-      if (cls.indexOf('rounded-2xl') < 0) continue;
-      if ((el.textContent || '').indexOf(KEY) < 0) continue;
-      var r = el.getBoundingClientRect();
-      if (!r.width || !r.height) continue;
-      var area = r.width * r.height;
-      if (area < bestArea){ bestArea = area; best = el; }
-    }
-    return best;
+  function applyAll(){
+    var panel = kvPanel();
+    if (!panel || !kvCache) return;
+    var rows = kvRows(panel);
+    rows.forEach(function(row){
+      // 行内容变化（React 重渲染）时重新注入
+      var old = row.querySelector('.c2a-kv-line');
+      if (old) old.remove();
+      row.removeAttribute(KEY_ATTR);
+      kvRenderOne(row, kvCache);
+    });
   }
 
-  function mountKeysBox(){
-    if (location.pathname.indexOf('/settings') !== 0) return;
-    if (document.getElementById(keysBoxId)) return;
-    var card = findSettingsCard();
-    if (!card) return;
-    keysCss();
-    var box = buildKeysBox();
-    card.appendChild(box);
-    loadKeys(box);
-
-    box.querySelector('#c2a-k-new').onclick = function(){
-      var name = prompt('给这把新密钥起个名字（比如「我的电脑」「Cherry Studio」）：', '');
-      if (name === null) return;
-      var btn = this;
-      btn.disabled = true; btn.textContent = '创建中…';
-      apiKeys('POST', '/p/api/keys/create', {name: (name || '').trim()})
-        .then(function(d){
-          btn.disabled = false; btn.textContent = '新建密钥';
-          var msg = box.querySelector('#c2a-k-msg');
-          if (d && d.ok && d.key){
-            msg.className = 'c2a-k-msg ok';
-            msg.textContent = '✅ 已创建，密钥：' + d.key + '（已存入列表，可随时复制）';
-            loadKeys(box);
-          } else {
-            msg.className = 'c2a-k-msg bad';
-            msg.textContent = (d && d.error) || '创建失败';
-          }
-        }).catch(function(e){
-          btn.disabled = false; btn.textContent = '新建密钥';
-          box.querySelector('#c2a-k-msg').textContent = '请求失败：' + e.message;
-        });
-    };
-  }
-
-  function watchKeys(){
-    if (keysTimer) return;
-    // React 重渲染会抹掉节点，观察并补回
+  function kvWatch(){
+    if (window.__c2aKvWatching) return;
+    window.__c2aKvWatching = 1;
+    var timer = null;
     var mo = new MutationObserver(function(){
       if (location.pathname.indexOf('/settings') !== 0) return;
-      if (document.getElementById(keysBoxId)) return;
-      mountKeysBox();
+      var panel = kvPanel();
+      if (!panel) return;
+      if (timer) return;
+      timer = setTimeout(function(){
+        timer = null;
+        if (!kvCache) { loadAndRender(); return; }
+        applyAll();
+      }, 250);
     });
     mo.observe(document.body, {childList: true, subtree: true});
-    mountKeysBox();
+
+    // 切到「用户密钥」tab 时拉一次数据
+    document.addEventListener('click', function(e){
+      var t = e.target;
+      while (t && t !== document.body){
+        if (t.getAttribute && t.getAttribute('role') === 'tab'){
+          if ((t.textContent || '').indexOf('用户密钥') >= 0){
+            kvCache = null;
+            setTimeout(function(){ loadAndRender(); }, 700);
+            setTimeout(function(){ loadAndRender(); }, 1800);
+          }
+          break;
+        }
+        t = t.parentElement;
+      }
+    }, true);
+
+    // 首次进入（如果本来就是用户密钥 tab）
+    if (kvPanel()) loadAndRender();
   }
 
-  var keysTries = 0;
-  var keysPoller = setInterval(function(){
-    keysTries++;
-    if (location.pathname.indexOf('/settings') === 0 && findSettingsCard()){
-      clearInterval(keysPoller);
-      watchKeys();
-      return;
-    }
-    if (keysTries > 40) clearInterval(keysPoller);
-  }, 350);
+  (function kvInit(){
+    var tries = 0;
+    var t = setInterval(function(){
+      tries++;
+      if (location.pathname.indexOf('/settings') === 0 && document.querySelector('[role="tabpanel"]')){
+        clearInterval(t);
+        kvWatch();
+      }
+      if (tries > 40) clearInterval(t);
+    }, 350);
+  })();
 
   // ---------- 复用面板登录态 ----------
   function mirrorKey(){

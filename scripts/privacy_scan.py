@@ -70,7 +70,10 @@ def main():
     all_hits = []
     nfiles = 0
     for root, dirs, files in os.walk(ROOT):
-        dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", "node_modules")]
+        # 跳过 .git / 缓存，以及以 _ 开头的本地测试目录（已 gitignore，不会上传）
+        dirs[:] = [d for d in dirs
+                   if d not in (".git", "__pycache__", "node_modules")
+                   and not d.startswith("_")]
         for fn in files:
             p = os.path.join(root, fn)
             rel = os.path.relpath(p, ROOT)

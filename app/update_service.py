@@ -45,11 +45,18 @@ PERSIST_DIR = "/app/data/code"     # 持久化目录（挂载卷，重建容器�
 BACKUP_ROOT = "/app/data"          # 备份根目录
 
 # 需要更新的文件（相对仓库路径 -> 容器内文件名）
+# 注意：这个清单必须覆盖「gateway 会 import 的所有本地模块」。
+# 之前漏了 key_vault / update_service，导致页内更新后
+# gateway.py 换成了新版、去 import key_vault 却找不到，
+# 页面报 "No module named 'key_vault'" —— 这类漏项会让更新直接坏掉。
+# 新增模块时记得同步加到这里。
 FILES = [
     "app/gateway.py",
     "app/webui.py",
     "app/webapi.py",
     "app/update_ui.py",
+    "app/update_service.py",
+    "app/key_vault.py",
     "app/patch_webdist.py",
     "app/stream_clean.py",
     "app/jsx_clean.py",
@@ -275,7 +282,10 @@ def apply_update(repo, raw_base, version, timeout=60):
                 "error": "一个文件都没下载成功，请检查网络。首个错误：" + (errors[0] if errors else "未知")}
 
     # 关键文件必须有，否则更新后起不来
-    must = ["app/gateway.py", "app/webui.py", "app/webapi.py"]
+    # 只要 gateway 会 import 的本地模块，缺一个都不能更新 ——
+    # 否则更新完 gateway 起来就 ImportError，整个面板打不开。
+    must = ["app/gateway.py", "app/webui.py", "app/webapi.py",
+            "app/key_vault.py", "app/update_service.py"]
     missing = [m for m in must if m not in blobs]
     if missing:
         return {"ok": False,

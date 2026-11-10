@@ -22,7 +22,7 @@ import re
 import sys
 
 CHUNK_DIR = "/app/web_dist/_next/static/chunks"
-APP_VERSION = "v2.4.0"   # 与 webui.APP_VERSION 保持一致
+APP_VERSION = "v2.4.1"   # 与 webui.APP_VERSION 保持一致
 
 # ---------------- A. 原生导航插入三项 ----------------
 NAV_MARK = "c2a-nav-injected"
